@@ -4,8 +4,8 @@ from starlette.middleware.sessions import SessionMiddleware
 import os
 
 # Import Pydantic models and controllers
-from api_models import UserPydantic, SessionPydantic
-from controllers import user_controller, session_controller
+from api_models import UserPydantic, SessionPydantic, CourseDeletePydantic, UserCoursePydantic
+from controllers import user_controller, session_controller, course_controller
 
 # --- Initialize FastAPI App ---
 app = FastAPI()
@@ -40,6 +40,31 @@ async def log_in(request: Request, credentials: SessionPydantic):
 @app.delete('/api/session')
 def log_out(request: Request):
     return session_controller.log_user_out(request.session)
+
+## Course Management (Add/Get/Delete) ##
+@app.post('/api/course')
+async def add_course(request: Request, credentials: UserCoursePydantic):
+    return course_controller.add_course(credentials.dict(), request.session)
+
+@app.get('/api/course')
+async def get_all_courses():
+    return course_controller.get_courses()
+
+@app.get('/api/course/{course_id}')
+async def get_course_by_id(request: Request, course_id: int):
+    return course_controller.get_course_by_id(course_id, request.session)
+
+@app.put('/api/course/{course_id}')
+async def update_course(request: Request, course_id: int, credentials: UserCoursePydantic):
+    return course_controller.update_course(credentials.dict(), request.session)
+
+@app.delete('/api/course')
+async def delete_course(request: Request, credentials: CourseDeletePydantic):
+    return course_controller.delete_course(credentials.dict(), request.session)
+
+@app.delete('/api/course/{course_id}')
+async def delete_course_by_id(request: Request, course_id: int):
+    return course_controller.delete_course_by_id(course_id, request.session)
 
 # --- Add your Course, Professor, and other endpoints below ---
 # Example:
