@@ -9,9 +9,29 @@ class SessionPydantic(BaseModel):
 class SessionDeletePydantic(BaseModel):
     sessionID: str
 
-class CourseDeletePydantic(BaseModel):
+class CourseCreate(BaseModel):
+    course_code: str
     name: str
-    cid: Optional[str] = None
+    description: Optional[str] = None
+    credits: int
+    semester: str
+    department: str
+    prerequisites: Optional[str] = None
+    capacity: Optional[int] = None
+    instructor: Optional[str] = None
+
+class CourseUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    credits: Optional[int] = None
+    semester: Optional[str] = None
+    department: Optional[str] = None
+    prerequisites: Optional[str] = None
+    capacity: Optional[int] = None
+    instructor: Optional[str] = None
+
+class CourseDelete(BaseModel):
+    course_code: str
     semester: str
 
 class updateUser(BaseModel):

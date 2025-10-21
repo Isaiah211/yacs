@@ -4,8 +4,14 @@ from starlette.middleware.sessions import SessionMiddleware
 import os
 
 # Import Pydantic models and controllers
-from api_models import UserPydantic, SessionPydantic, CourseDeletePydantic, UserCoursePydantic
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from api_models import (
+    UserPydantic, SessionPydantic, CourseCreate,
+    CourseUpdate, CourseDelete
+)
 from controllers import user_controller, session_controller, course_controller
+from tables.database import get_db
 
 # --- Initialize FastAPI App ---
 app = FastAPI()
@@ -41,13 +47,46 @@ async def log_in(request: Request, credentials: SessionPydantic):
 def log_out(request: Request):
     return session_controller.log_user_out(request.session)
 
-## Course Management (Add/Get/Delete) ##
-@app.post('/api/course')
-async def add_course(request: Request, credentials: UserCoursePydantic):
-    return course_controller.add_course(credentials.dict(), request.session)
+## Course Management ##
+@app.post('/api/courses')
+async def create_course(
+    course: CourseCreate,
+    db: Session = Depends(get_db)
+):
+    return course_controller.create_course(course.dict(), db)
 
-@app.get('/api/course')
-async def get_all_courses():
+@app.get('/api/courses')
+async def get_courses(
+    semester: Optional[str] = None,
+    department: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    return course_controller.get_courses(semester, department, db)
+
+@app.get('/api/courses/{course_code}')
+async def get_course(
+    course_code: str,
+    semester: str,
+    db: Session = Depends(get_db)
+):
+    return course_controller.get_course(course_code, semester, db)
+
+@app.put('/api/courses/{course_code}')
+async def update_course(
+    course_code: str,
+    semester: str,
+    updates: CourseUpdate,
+    db: Session = Depends(get_db)
+):
+    return course_controller.update_course(course_code, semester, updates.dict(exclude_unset=True), db)
+
+@app.delete('/api/courses/{course_code}')
+async def delete_course(
+    course_code: str,
+    semester: str,
+    db: Session = Depends(get_db)
+):
+    return course_controller.delete_course(course_code, semester, db)
     return course_controller.get_courses()
 
 @app.get('/api/course/{course_id}')

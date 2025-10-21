@@ -1,53 +1,166 @@
 from typing import List, Dict, Optional
-import uuid
-from datetime import datetime
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+from ..tables.course import Course
+from sqlalchemy.exc import IntegrityError
 
-# In-memory storage for courses (replace with database later)
-courses = []
-
-def add_course(course_data: Dict) -> Dict:
+def create_course(course_data: Dict, db: Session) -> Dict:
     """
-    Add a new course to the system.
+    Create a new course.
     
     Args:
         course_data (Dict): Dictionary containing course information
-                           Expected keys: name, cid, semester
+        db (Session): Database session
     
     Returns:
         Dict: Response with success status and course data or error message
     """
     try:
-        # Validate required fields
-        required_fields = ['name', 'semester']
-        for field in required_fields:
-            if field not in course_data or not course_data[field]:
-                return {"success": False, "error": f"Missing required field: {field}"}
-        
-        # Generate course ID if not provided
-        if 'cid' not in course_data or not course_data['cid']:
-            course_data['cid'] = str(uuid.uuid4())
-        
         # Check if course already exists
-        existing_course = next((c for c in courses if c['cid'] == course_data['cid'] and c['semester'] == course_data['semester']), None)
-        if existing_course:
+        existing = db.query(Course).filter(
+            Course.course_code == course_data["course_code"],
+            Course.semester == course_data["semester"]
+        ).first()
+        
+        if existing:
             return {"success": False, "error": "Course already exists for this semester"}
         
-        # Add timestamp
-        course_data['created_at'] = datetime.now().isoformat()
-        
-        # Add course to storage
-        courses.append(course_data)
+        # Create new course
+        new_course = Course(**course_data)
+        db.add(new_course)
+        db.commit()
+        db.refresh(new_course)
         
         return {
-            "success": True, 
-            "message": "Course added successfully",
-            "course": course_data
+            "success": True,
+            "message": "Course created successfully",
+            "course": new_course.to_dict()
         }
-        
     except Exception as e:
-        return {"success": False, "error": f"Failed to add course: {str(e)}"}
+        db.rollback()
+        return {"success": False, "error": str(e)}
 
-def get_courses(semester: Optional[str] = None) -> Dict:
+def get_courses(semester: Optional[str] = None, department: Optional[str] = None, db: Session = None) -> Dict:
+    """
+    Get all courses with optional filters.
+    
+    Args:
+        semester (str, optional): Filter by semester
+        department (str, optional): Filter by department
+        db (Session): Database session
+    
+    Returns:
+        Dict: Response with success status and list of courses
+    """
+    try:
+        query = db.query(Course)
+        
+        if semester:
+            query = query.filter(Course.semester == semester)
+        if department:
+            query = query.filter(Course.department == department)
+            
+        courses = query.all()
+        return {
+            "success": True,
+            "courses": [course.to_dict() for course in courses]
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_course(course_code: str, semester: str, db: Session) -> Dict:
+    """
+    Get a specific course by code and semester.
+    
+    Args:
+        course_code (str): The course code
+        semester (str): The semester
+        db (Session): Database session
+    
+    Returns:
+        Dict: Response with success status and course data
+    """
+    try:
+        course = db.query(Course).filter(
+            Course.course_code == course_code,
+            Course.semester == semester
+        ).first()
+        
+        if not course:
+            return {"success": False, "error": "Course not found"}
+            
+        return {"success": True, "course": course.to_dict()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def update_course(course_code: str, semester: str, updates: Dict, db: Session) -> Dict:
+    """
+    Update a course's details.
+    
+    Args:
+        course_code (str): The course code
+        semester (str): The semester
+        updates (Dict): The fields to update
+        db (Session): Database session
+    
+    Returns:
+        Dict: Response with success status and updated course data
+    """
+    try:
+        course = db.query(Course).filter(
+            Course.course_code == course_code,
+            Course.semester == semester
+        ).first()
+        
+        if not course:
+            return {"success": False, "error": "Course not found"}
+            
+        # Update allowed fields
+        for key, value in updates.items():
+            if hasattr(course, key) and value is not None:
+                setattr(course, key, value)
+                
+        db.commit()
+        db.refresh(course)
+        return {
+            "success": True,
+            "message": "Course updated successfully",
+            "course": course.to_dict()
+        }
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+
+def delete_course(course_code: str, semester: str, db: Session) -> Dict:
+    """
+    Delete a course.
+    
+    Args:
+        course_code (str): The course code
+        semester (str): The semester
+        db (Session): Database session
+    
+    Returns:
+        Dict: Response with success status
+    """
+    try:
+        course = db.query(Course).filter(
+            Course.course_code == course_code,
+            Course.semester == semester
+        ).first()
+        
+        if not course:
+            return {"success": False, "error": "Course not found"}
+            
+        db.delete(course)
+        db.commit()
+        return {
+            "success": True,
+            "message": f"Course {course_code} for {semester} has been deleted"
+        }
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
     """
     Get all courses or courses for a specific semester.
     
