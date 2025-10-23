@@ -2,6 +2,7 @@
 from fastapi import FastAPI, Request, Response
 from starlette.middleware.sessions import SessionMiddleware
 import os
+from typing import Optional
 
 # Import Pydantic models and controllers
 from fastapi import Depends
@@ -104,6 +105,39 @@ async def delete_course(request: Request, credentials: CourseDeletePydantic):
 @app.delete('/api/course/{course_id}')
 async def delete_course_by_id(request: Request, course_id: int):
     return course_controller.delete_course_by_id(course_id, request.session)
+
+@app.get('/api/courses/{course_code}/prerequisites')
+async def get_prerequisites(
+    course_code: str,
+    db: Session = Depends(get_db)
+):
+    """get all prerequisites for a course"""
+    course = db.query(Course).filter(Course.course_code == course_code).first()
+    if not course:
+        return {"error": "Course not found"}, 404
+    
+    return course_controller.get_course_with_prerequisites(course.id, db)
+
+@app.post('/api/courses/{course_code}/prerequisites')
+async def add_prerequisite_endpoint(
+    course_code: str,
+    prerequisite_code: str,
+    db: Session = Depends(get_db)
+):
+    """add a prerequisite to a course"""
+    try:
+        return course_controller.add_prerequisite(course_code, prerequisite_code, db)
+    except ValueError as e:
+        return {"error": str(e)}, 400
+
+@app.get('/api/courses/{course_code}/required-by')
+async def get_courses_requiring(
+    course_code: str,
+    db: Session = Depends(get_db)
+):
+    """find courses that require this course as a prerequisite"""
+    courses = course_controller.get_courses_requiring_prerequisite(course_code, db)
+    return [{"course_code": c.course_code, "title": c.title} for c in courses]
 
 # --- Add your Course, Professor, and other endpoints below ---
 # Example:

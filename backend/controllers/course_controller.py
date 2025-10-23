@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from ..tables.course import Course
 from sqlalchemy.exc import IntegrityError
+from ..tables.course_prerequisite import CoursePrerequisite
 
 def create_course(course_data: Dict, db: Session) -> Dict:
     """
@@ -350,4 +351,96 @@ def clear_all_courses() -> Dict:
     return {
         "success": True,
         "message": f"Cleared {courses_count} courses successfully"
+    }
+
+def get_course_with_prerequisites(course_id: int, db: Session):
+    """get a course with all its prerequisites."""
+    course = db.query(Course).filter(Course.id == course_id).first()
+    
+    if not course:
+        return None
+    
+    #get all prerequisites
+    prerequisites = db.query(Course).join(
+        CoursePrerequisite,
+        CoursePrerequisite.prerequisite_id == Course.id
+    ).filter(
+        CoursePrerequisite.course_id == course_id
+    ).all()
+    
+    return {
+        "id": course.id,
+        "course_code": course.course_code,
+        "title": course.title,
+        "prerequisites": [
+            {
+                "id": prereq.id,
+                "course_code": prereq.course_code,
+                "title": prereq.title
+            }
+            for prereq in prerequisites
+        ]
+    }
+
+def add_prerequisite(course_code: str, prerequisite_code: str, db: Session):
+    """add a prerequisite to a course"""
+    #find both courses
+    course = db.query(Course).filter(Course.course_code == course_code).first()
+    prerequisite = db.query(Course).filter(Course.course_code == prerequisite_code).first()
+    
+    if not course or not prerequisite:
+        raise ValueError("Course or prerequisite not found")
+    
+    #create relationship (setup relationships in CoursePrerequisite table if want to use in future)
+    prereq_relation = CoursePrerequisite(
+        course_id=course.id,
+        prerequisite_id=prerequisite.id
+    )
+    
+    db.add(prereq_relation)
+    db.commit()
+    
+    return {"message": f"Added {prerequisite_code} as prerequisite for {course_code}"}
+
+def get_courses_requiring_prerequisite(prerequisite_code: str, db: Session):
+    """find all courses that require a specific prerequisite"""
+    prerequisite = db.query(Course).filter(
+        Course.course_code == prerequisite_code
+    ).first()
+    
+    if not prerequisite:
+        return []
+    
+    courses = db.query(Course).join(
+        CoursePrerequisite,
+        CoursePrerequisite.course_id == Course.id
+    ).filter(
+        CoursePrerequisite.prerequisite_id == prerequisite.id
+    ).all()
+    
+    return courses
+
+def check_prerequisites_met(student_courses: list[str], target_course: str, db: Session):
+    """check if student has completed all prerequisites for a course"""
+    course = db.query(Course).filter(Course.course_code == target_course).first()
+    
+    if not course:
+        return False
+    
+    #get required prerequisites
+    required_prereqs = db.query(Course.course_code).join(
+        CoursePrerequisite,
+        CoursePrerequisite.prerequisite_id == Course.id
+    ).filter(
+        CoursePrerequisite.course_id == course.id
+    ).all()
+    
+    required_codes = {prereq[0] for prereq in required_prereqs}
+    student_codes = set(student_courses)
+    
+    missing = required_codes - student_codes
+    
+    return {
+        "can_enroll": len(missing) == 0,
+        "missing_prerequisites": list(missing)
     }
