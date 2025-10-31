@@ -13,6 +13,7 @@ from api_models import (
 )
 from controllers import user_controller, session_controller, course_controller
 from tables.database import get_db
+from tables.course import Course
 
 # --- Initialize FastAPI App ---
 app = FastAPI()
@@ -138,6 +139,29 @@ async def get_courses_requiring(
     """find courses that require this course as a prerequisite"""
     courses = course_controller.get_courses_requiring_prerequisite(course_code, db)
     return [{"course_code": c.course_code, "title": c.title} for c in courses]
+
+@app.get('/api/courses/{course_code}/corequisites')
+async def get_corequisites(course_code: str, db: Session = Depends(get_db)):
+    course = db.query(Course).filter(Course.course_code == course_code).first()
+    if not course:
+        return {"error": "Course not found"}
+    return course_controller.get_course_with_corequisites(course.id, db)
+
+@app.post('/api/courses/{course_code}/corequisites')
+async def add_corequisite_endpoint(
+    course_code: str,
+    corequisite_code: str, #pass as query param ?corequisite_code=CSCI-XXXX
+    db: Session = Depends(get_db)
+):
+    try:
+        return course_controller.add_corequisite(course_code, corequisite_code, db)
+    except ValueError as e:
+        return {"error": str(e)}
+
+@app.get('/api/courses/{course_code}/required-with')
+async def get_courses_requiring_coreq(course_code: str, db: Session = Depends(get_db)):
+    courses = course_controller.get_courses_requiring_corequisite(course_code, db)
+    return [{"course_code": c.course_code, "title": getattr(c, "title", None)} for c in courses]
 
 # --- Add your Course, Professor, and other endpoints below ---
 # Example:

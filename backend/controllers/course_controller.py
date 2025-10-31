@@ -2,6 +2,7 @@ from typing import List, Dict, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from ..tables.course import Course
+from ..tables.course_corequisite import CourseCorequisite
 from sqlalchemy.exc import IntegrityError
 from ..tables.course_prerequisite import CoursePrerequisite
 
@@ -444,3 +445,64 @@ def check_prerequisites_met(student_courses: list[str], target_course: str, db: 
         "can_enroll": len(missing) == 0,
         "missing_prerequisites": list(missing)
     }
+
+def get_course_with_corequisites(course_id: int, db: Session):
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        return None
+
+    coreqs = (
+        db.query(Course)
+        .join(CourseCorequisite, CourseCorequisite.corequisite_id == Course.id)
+        .filter(CourseCorequisite.course_id == course_id)
+        .all()
+    )
+
+    return {
+        "id": course.id,
+        "course_code": course.course_code,
+        "title": getattr(course, "title", None),
+        "corequisites": [
+            {
+                "id": c.id,
+                "course_code": c.course_code,
+                "title": getattr(c, "title", None),
+            }
+            for c in coreqs
+        ],
+    }
+
+def add_corequisite(course_code: str, corequisite_code: str, db: Session):
+    course = db.query(Course).filter(Course.course_code == course_code).first()
+    coreq = db.query(Course).filter(Course.course_code == corequisite_code).first()
+
+    if not course or not coreq:
+        raise ValueError("Course or corequisite not found")
+
+    exists = (
+        db.query(CourseCorequisite)
+        .filter(
+            CourseCorequisite.course_id == course.id,
+            CourseCorequisite.corequisite_id == coreq.id,
+        )
+        .first()
+    )
+    if exists:
+        return {"message": "Corequisite already exists"}
+
+    db.add(CourseCorequisite(course_id=course.id, corequisite_id=coreq.id))
+    db.commit()
+    return {"message": f"Added {corequisite_code} as corequisite for {course_code}"}
+
+def get_courses_requiring_corequisite(corequisite_code: str, db: Session):
+    coreq = db.query(Course).filter(Course.course_code == corequisite_code).first()
+    if not coreq:
+        return []
+
+    courses = (
+        db.query(Course)
+        .join(CourseCorequisite, CourseCorequisite.course_id == Course.id)
+        .filter(CourseCorequisite.corequisite_id == coreq.id)
+        .all()
+    )
+    return courses
