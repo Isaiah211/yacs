@@ -11,7 +11,7 @@ from api_models import (
     UserPydantic, SessionPydantic, CourseCreate,
     CourseUpdate, CourseDelete
 )
-from controllers import user_controller, session_controller, course_controller
+from controllers import user_controller, session_controller, course_controller, semester_controller
 from tables.database import get_db
 
 # --- Initialize FastAPI App ---
@@ -19,6 +19,9 @@ app = FastAPI()
 
 # --- Add Middleware ---
 app.add_middleware(SessionMiddleware, secret_key="a_very_secret_key")
+
+# --- Include Routers ---
+app.include_router(semester_controller.router, tags=["semesters"])
 
 # --- API Endpoints ---
 
