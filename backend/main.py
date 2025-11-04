@@ -11,7 +11,10 @@ from api_models import (
     UserPydantic, SessionPydantic, CourseCreate,
     CourseUpdate, CourseDelete
 )
-from controllers import user_controller, session_controller, course_controller, semester_controller
+from controllers import (
+    user_controller, session_controller, course_controller,
+    semester_controller, pathway_controller
+)
 from tables.database import get_db
 from tables.course import Course
 
@@ -23,6 +26,7 @@ app.add_middleware(SessionMiddleware, secret_key="a_very_secret_key")
 
 # --- Include Routers ---
 app.include_router(semester_controller.router, tags=["semesters"])
+app.include_router(pathway_controller.router, tags=["pathways"])
 
 # --- API Endpoints ---
 
