@@ -5,6 +5,8 @@ from ..tables.course import Course
 from ..tables.course_corequisite import CourseCorequisite
 from sqlalchemy.exc import IntegrityError
 from ..tables.course_prerequisite import CoursePrerequisite
+from sqlalchemy import or_, and_, func
+from datetime import datetime
 
 def create_course(course_data: Dict, db: Session) -> Dict:
     """
@@ -506,3 +508,255 @@ def get_courses_requiring_corequisite(corequisite_code: str, db: Session):
         .all()
     )
     return courses
+
+def search_courses(
+    db: Session,
+    query: Optional[str] = None,
+    semester: Optional[str] = None,
+    department: Optional[str] = None,
+    credits: Optional[int] = None,
+    instructor: Optional[str] = None,
+    min_credits: Optional[int] = None,
+    max_credits: Optional[int] = None,
+    level: Optional[str] = None, #1000-4000
+    has_capacity: Optional[bool] = None,
+    sort_by: Optional[str] = "course_code",
+    sort_order: Optional[str] = "asc",
+    limit: Optional[int] = 100,
+    offset: Optional[int] = 0
+) -> Dict:
+    """
+    search/filter for courses
+
+    args:
+        db: database session
+        query: search text like searches in course code, name, description
+        semester: filter by semester
+        department: filter by department
+        credits: how many credits
+        instructor: instructor name
+        min_credits: min credits
+        max_credits: max credits
+        level: course level
+        has_capacity: courses with available seats
+        sort_by: field to sort by (course code, name, credits, department)
+        sort_order: sort direction
+        limit: max results to return
+        offset: number of results to skip
+
+    returns dict with success status, courses list, and other data
+    """
+    try:
+        base_query = db.query(Course)
+    
+        #apply filters
+        filters = []
+    
+        #txt search across whatevr fields
+        if query:
+            search_term = f"%{query}%"
+            filters.append(
+                or_(
+                    Course.course_code.ilike(search_term),
+                    Course.name.ilike(search_term),
+                    Course.description.ilike(search_term),
+                    Course.instructor.ilike(search_term)
+                )
+            )
+    
+        #semester filter
+        if semester:
+            filters.append(Course.semester == semester)
+    
+        #department filter
+        if department:
+            filters.append(Course.department == department)
+    
+        #credits filters
+        if credits is not None:
+            filters.append(Course.credits == credits)
+        if min_credits is not None:
+            filters.append(Course.credits >= min_credits)
+        if max_credits is not None:
+            filters.append(Course.credits <= max_credits)
+    
+        #instructor filter
+        if instructor:
+            filters.append(Course.instructor.ilike(f"%{instructor}%"))
+    
+        #course level filter
+        if level:
+            #get level from course code by taking first digit for the level
+            level_digit = level[0] if level else None
+            if level_digit:
+                filters.append(Course.course_code.ilike(f"%-{level_digit}___"))
+    
+        #capacity availability filter
+        if has_capacity:
+            filters.append(Course.capacity > 0)
+    
+        #apply filters
+        if filters:
+            base_query = base_query.filter(and_(*filters))
+    
+        #get total count before pagination
+        total_count = base_query.count()
+    
+        #sorting
+        sort_column = getattr(Course, sort_by, Course.course_code)
+        if sort_order.lower() == "desc":
+            base_query = base_query.order_by(sort_column.desc())
+        else:
+            base_query = base_query.order_by(sort_column.asc())
+    
+        #pagination
+        base_query = base_query.limit(limit).offset(offset)
+    
+        #execute query
+        courses = base_query.all()
+    
+        return {
+            "success": True,
+            "courses": [course.to_dict() for course in courses],
+            "metadata": {
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "count": len(courses),
+                "has_more": (offset + len(courses)) < total_count
+            }
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_departments(db: Session, semester: Optional[str] = None) -> Dict:
+    """
+    gets list of depts
+
+    args:
+        db: database session
+        semester: semester filter
+
+    returns dict with success status and list of depts
+    """
+    try:
+        query = db.query(Course.department).distinct()
+    
+        if semester:
+            query = query.filter(Course.semester == semester)
+    
+        departments = [dept[0] for dept in query.all()]
+        departments.sort()
+    
+        return {
+            "success": True,
+            "departments": departments
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_instructors(db: Session, semester: Optional[str] = None, department: Optional[str] = None) -> Dict:
+    """
+    get list of instructors
+
+    args:
+        db: database session
+        semester: semester filter
+        department: department filter
+
+    returns dict with success status and instructors
+    """
+    try:
+        query = db.query(Course.instructor).distinct().filter(Course.instructor.isnot(None))
+    
+        if semester:
+            query = query.filter(Course.semester == semester)
+        if department:
+            query = query.filter(Course.department == department)
+    
+        instructors = [instr[0] for instr in query.all()]
+        instructors.sort()
+    
+        return {
+            "success": True,
+            "instructors": instructors
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_course_levels(db: Session, department: Optional[str] = None) -> Dict:
+    """
+    get available course levels
+
+    args:
+        db: database session
+        department: department filter
+
+    returns dict with success status and list of levels
+    """
+    try:
+        query = db.query(Course.course_code)
+    
+        if department:
+            query = query.filter(Course.department == department)
+    
+        course_codes = [code[0] for code in query.all()]
+    
+        #get level from course code by taking first digit for the level
+        levels = set()
+        for code in course_codes:
+            if '-' in code:
+                number_part = code.split('-')[1]
+                if number_part and number_part[0].isdigit():
+                    level = number_part[0] + "000"
+                    levels.add(level)
+    
+        levels_list = sorted(list(levels))
+    
+        return {
+            "success": True,
+            "levels": levels_list
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_courses_by_department_level(db: Session, department: str, level: str, semester: Optional[str] = None) -> Dict:
+    """
+    get courses by department and level
+
+    args:
+        db: database session
+        department: department code
+        level: course level
+        semester: semester filter
+
+    returns dict with success status and list of courses
+    """
+    try:
+        query = db.query(Course).filter(Course.department == department)
+    
+        if semester:
+            query = query.filter(Course.semester == semester)
+    
+        #filter by level
+        level_digit = level[0] if level else None
+        if level_digit:
+            query = query.filter(Course.course_code.ilike(f"%-{level_digit}___"))
+    
+        courses = query.order_by(Course.course_code).all()
+    
+        return {
+            "success": True,
+            "courses": [course.to_dict() for course in courses]
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}

@@ -9,7 +9,7 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 from api_models import (
     UserPydantic, SessionPydantic, CourseCreate,
-    CourseUpdate, CourseDelete
+    CourseUpdate, CourseDelete, UserCoursePydantic
 )
 from controllers import (
     user_controller, session_controller, course_controller,
@@ -108,7 +108,7 @@ async def update_course(request: Request, course_id: int, credentials: UserCours
     return course_controller.update_course(credentials.dict(), request.session)
 
 @app.delete('/api/course')
-async def delete_course(request: Request, credentials: CourseDeletePydantic):
+async def delete_course_alt(request: Request, credentials: CourseDelete):
     return course_controller.delete_course(credentials.dict(), request.session)
 
 @app.delete('/api/course/{course_id}')
@@ -170,6 +170,57 @@ async def add_corequisite_endpoint(
 async def get_courses_requiring_coreq(course_code: str, db: Session = Depends(get_db)):
     courses = course_controller.get_courses_requiring_corequisite(course_code, db)
     return [{"course_code": c.course_code, "title": getattr(c, "title", None)} for c in courses]
+
+@app.get('/api/courses/search')
+async def search_courses(
+    query: Optional[str] = None,
+    semester: Optional[str] = None,
+    department: Optional[str] = None,
+    credits: Optional[int] = None,
+    instructor: Optional[str] = None,
+    min_credits: Optional[int] = None,
+    max_credits: Optional[int] = None,
+    level: Optional[str] = None,
+    has_capacity: Optional[bool] = None,
+    sort_by: Optional[str] = "course_code",
+    sort_order: Optional[str] = "asc",
+    limit: Optional[int] = 100,
+    offset: Optional[int] = 0,
+    db: Session = Depends(get_db)
+):
+    return course_controller.search_courses(
+        db=db,
+        query=query,
+        semester=semester,
+        department=department,
+        credits=credits,
+        instructor=instructor,
+        min_credits=min_credits,
+        max_credits=max_credits,
+        level=level,
+        has_capacity=has_capacity,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset
+    )
+
+@app.get('/api/courses/departments')
+async def get_departments(semester: Optional[str] = None, db: Session = Depends(get_db)):
+    return course_controller.get_departments(db, semester)
+
+@app.get('/api/courses/instructors')
+async def get_instructors(semester: Optional[str] = None, department: Optional[str] = None, db: Session = Depends(get_db)):
+    return course_controller.get_instructors(db, semester, department)
+
+@app.get('/api/courses/levels')
+async def get_course_levels(department: Optional[str] = None, db: Session = Depends(get_db)):
+    return course_controller.get_course_levels(db, department)
+
+@app.get('/api/courses/department/{department}/level/{level}')
+async def get_courses_by_dept_level(department: str, level: str, semester: Optional[str] = None, db: Session = Depends(get_db)):
+    return course_controller.get_courses_by_department_level(db, department, level, semester)
+
 
 # --- Add your Course, Professor, and other endpoints below ---
 # Example:
