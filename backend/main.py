@@ -13,7 +13,7 @@ from api_models import (
 )
 from controllers import (
     user_controller, session_controller, course_controller,
-    semester_controller, pathway_controller
+    semester_controller, pathway_controller, optimizer_controller
 )
 from tables.database import get_db
 from tables.course import Course
@@ -27,6 +27,7 @@ app.add_middleware(SessionMiddleware, secret_key="a_very_secret_key")
 # --- Include Routers ---
 app.include_router(semester_controller.router, tags=["semesters"])
 app.include_router(pathway_controller.router, tags=["pathways"])
+app.include_router(optimizer_controller.router, tags=["optimizer"])
 
 # --- API Endpoints ---
 
