@@ -6,6 +6,7 @@ from ..tables.pathway import Pathway
 from ..tables.course import Course
 from ..tables.course_prerequisite import CoursePrerequisite
 from ..tables.semester import Semester as SemesterModel
+from ..tables.course_offering import CourseOffering
 
 
 def _next_semester_label(current_label: str) -> str:
@@ -139,32 +140,94 @@ def optimize_pathway(
     plan: List[Dict] = []
     term_count = 0
 
+    def offered_this_term(code: str, sem_label: str) -> Optional[CourseOffering]:
+        """Return a CourseOffering for the given course_code and sem_label, or None.
+
+        sem_label expected as 'Term YYYY' (e.g., 'Fall 2025'). If CourseOffering.year is NULL it
+        represents a recurring offering in that term. Preference: exact year match -> recurring.
+        """
+        try:
+            term, year_s = sem_label.split()
+            year = int(year_s)
+        except Exception:
+            # if parsing fails, only match term name
+            term = sem_label
+            year = None
+
+        # find course id for code
+        course = code_to_course.get(code)
+        if not course:
+            return None
+
+        q = db.query(CourseOffering).filter(CourseOffering.course_id == course.id)
+
+        # prefer exact year match if year provided
+        if year is not None:
+            offered_year = q.filter((CourseOffering.year == year) & (CourseOffering.term == term)).first()
+            if offered_year:
+                return offered_year
+
+        # fallback to recurring offering (year NULL)
+        offered_recurring = q.filter((CourseOffering.year == None) & (CourseOffering.term == term)).first()
+        return offered_recurring
+
+
     while remaining and term_count < max_terms:
         term_count += 1
         # eligible: prerequisites subset of completed
         eligible = [code for code in remaining if prereq_map.get(code, set()).issubset(completed)]
+
+        # filter by offerings for this term
+        offered_now = [code for code in eligible if offered_this_term(code, sem_label)]
 
         # sort eligible by numeric level if possible (e.g., CSCI-1100 -> 1100), else by code
         def sort_key(code: str):
             parts = ''.join(ch if ch.isdigit() else ' ' for ch in code).split()
             return int(parts[0]) if parts else 0
 
-        eligible.sort(key=sort_key)
+        offered_now.sort(key=sort_key)
 
         semester_courses = []
         credits = 0
-        for code in eligible:
+        for code in offered_now:
             c = code_to_course.get(code)
             if not c:
                 continue
             if credits + (c.credits or 0) > max_credits_per_semester:
                 continue
-            semester_courses.append({'course_code': code, 'name': c.name, 'credits': c.credits})
+            offering = offered_this_term(code, sem_label)
+            # offering should be present in offered_now, but double-check
+            offering_info = None
+            if offering:
+                offering_info = {
+                    'section': offering.section,
+                    'days': offering.days,
+                    'start_time': offering.start_time,
+                    'end_time': offering.end_time,
+                    'instructor': offering.instructor,
+                    'location': offering.location,
+                    'capacity': offering.capacity,
+                }
+
+            semester_courses.append({
+                'course_code': code,
+                'name': c.name,
+                'credits': c.credits,
+                'offering': offering_info,
+            })
             credits += c.credits or 0
 
+        # If no offered courses fit this semester but there are eligible courses, advance term
         if not semester_courses:
-            # no eligible courses fit the credit limit or unmet prerequisites -> break to avoid infinite loop
-            break
+            # If there were no eligible courses at all, it's likely due to unmet prereqs; advance term
+            # but avoid infinite loop: if nothing eligible (due to unmet prereqs) and no eligible courses
+            # across all terms, break.
+            if not eligible:
+                # nothing eligible this turn; cannot progress -> break
+                break
+            # else, advance term and continue trying to schedule eligible courses later
+            sem_label = _next_semester_label(sem_label)
+            continue
 
         plan.append({'semester': sem_label, 'courses': semester_courses, 'total_credits': credits})
 
