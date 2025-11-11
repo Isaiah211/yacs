@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
+from datetime import time
 
 
 class SessionPydantic(BaseModel):
@@ -19,6 +20,10 @@ class CourseCreate(BaseModel):
     prerequisites: Optional[str] = None
     capacity: Optional[int] = None
     instructor: Optional[str] = None
+    days_of_week: Optional[str] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    location: Optional[str] = None
 
 class CourseUpdate(BaseModel):
     name: Optional[str] = None
@@ -29,6 +34,10 @@ class CourseUpdate(BaseModel):
     prerequisites: Optional[str] = None
     capacity: Optional[int] = None
     instructor: Optional[str] = None
+    days_of_week: Optional[str] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    location: Optional[str] = None
 
 class CourseDelete(BaseModel):
     course_code: str

@@ -760,3 +760,118 @@ def get_courses_by_department_level(db: Session, department: str, level: str, se
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+#conflict detection functions
+def has_day_overlap(days1: str, days2: str) -> bool:
+    """
+    check if two day strings have any overlapping days
+    args take strings like "MWR", "TF", etc
+    returns true if theres at least one common day
+    """
+    if not days1 or not days2:
+        return False
+    
+    #convert to sets and check intersection
+    set1 = set(days1.upper())
+    set2 = set(days2.upper())
+    return bool(set1 & set2)
+
+
+def has_time_overlap(start1, end1, start2, end2) -> bool:
+    """
+    check if two time ranges overlap
+    args take start and end times of two courses
+    returns true if time ranges overlap
+    """
+    if not all([start1, end1, start2, end2]):
+        return False
+
+    #convert to datetime.time if needed
+    from datetime import time as dt_time
+    
+    def to_time(t):
+        if isinstance(t, dt_time):
+            return t
+        if isinstance(t, str):
+            parts = t.split(':')
+            return dt_time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+        return t
+    
+    start1 = to_time(start1)
+    end1 = to_time(end1)
+    start2 = to_time(start2)
+    end2 = to_time(end2)
+    
+    #check if ranges overlap
+    return start1 < end2 and start2 < end1
+
+
+def check_course_conflict(course1: Course, course2: Course) -> Dict:
+    """
+    check if two courses have a scheduling conflict
+    returns dict with conflict status and details
+    """
+    #same course
+    if course1.id == course2.id:
+        return {
+            "has_conflict": False,
+            "reason": None
+        }
+    
+    #different semesters
+    if course1.semester != course2.semester:
+        return {
+            "has_conflict": False,
+            "reason": None
+        }
+    
+    #first check if both have schedule information
+    if not (course1.days_of_week and course1.start_time and course1.end_time):
+        return {
+            "has_conflict": False,
+            "reason": "course 1 has no schedule information"
+        }
+    
+    if not (course2.days_of_week and course2.start_time and course2.end_time):
+        return {
+            "has_conflict": False,
+            "reason": "course 2 has no schedule information"
+        }
+    
+    #check for day overlap
+    if not has_day_overlap(course1.days_of_week, course2.days_of_week):
+        return {
+            "has_conflict": False,
+            "reason": "no overlapping days"
+        }
+    
+    #check for time overlap
+    if not has_time_overlap(course1.start_time, course1.end_time, course2.start_time, course2.end_time):
+        return {
+            "has_conflict": False,
+            "reason": "no overlapping times"
+        }
+    
+    #both day and time overlap; conflict
+    overlapping_days = set(course1.days_of_week.upper()) & set(course2.days_of_week.upper())
+    
+    return {
+        "has_conflict": True,
+        "reason": f"Time conflict on {', '.join(sorted(overlapping_days))}",
+        "details": {
+            "course1": {
+                "code": course1.course_code,
+                "name": course1.name,
+                "days": course1.days_of_week,
+                "time": f"{course1.start_time} - {course1.end_time}",
+                "location": course1.location
+            },
+            "course2": {
+                "code": course2.course_code,
+                "name": course2.name,
+                "days": course2.days_of_week,
+                "time": f"{course2.start_time} - {course2.end_time}",
+                "location": course2.location
+            }
+        }
+    }
