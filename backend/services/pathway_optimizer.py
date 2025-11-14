@@ -98,6 +98,7 @@ def optimize_pathway(
     max_terms: int = 12,
     allow_overfull: bool = False,
     reserve_seats: bool = False,
+    balance_load: bool = False,
 ) -> List[Dict]:
     """Return a semester-by-semester plan of courses (list of dicts).
 
@@ -189,7 +190,121 @@ def optimize_pathway(
         return None
 
 
-    while remaining and term_count < max_terms:
+    if not balance_load:
+        # ...existing code for normal greedy/DFS packing...
+        while remaining and term_count < max_terms:
+            # ...existing code...
+        return plan
+
+    # --- load balancing mode: try to spread credits evenly across all terms ---
+    # Precompute all eligible courses by term, then assign in round-robin fashion
+    # This is a greedy heuristic: for each term, pick from eligible, non-conflicting, not-yet-scheduled courses, aiming for target_credits per term
+    plan = []
+    scheduled = set(completed)
+    sem_label = start_semester
+    if not sem_label:
+        current = db.query(SemesterModel).filter(SemesterModel.start_date <= datetime.today(), SemesterModel.end_date >= datetime.today()).first()
+        if current:
+            sem_label = f"{current.term} {current.year}"
+        else:
+            today = datetime.today()
+            if today.month >= 8:
+                sem_label = f"Fall {today.year}"
+            elif today.month >= 5:
+                sem_label = f"Summer {today.year}"
+            else:
+                sem_label = f"Spring {today.year}"
+
+    # Compute target credits per term
+    total_credits = sum(c.credits or 0 for c in code_to_course.values() if c.course_code not in completed)
+    n_terms = max_terms
+    target_credits = max_credits_per_semester
+    if n_terms > 0:
+        target_credits = min(max_credits_per_semester, max(1, (total_credits + n_terms - 1) // n_terms))
+
+    # For each term, try to pack up to target_credits, round-robin until all scheduled or terms exhausted
+    for t in range(n_terms):
+        # eligible: prereqs met and not yet scheduled
+        eligible = [code for code in code_to_course if code not in scheduled and prereq_map.get(code, set()).issubset(scheduled)]
+        # filter by offerings for this term and select offering
+        offered_now_with_offering = []
+        for code in eligible:
+            offering = offered_this_term(code, sem_label)
+            if offering:
+                offered_now_with_offering.append((code, offering))
+        # prepare candidates: (code, offering, credits)
+        candidates = []
+        for code, offering in offered_now_with_offering:
+            c = code_to_course.get(code)
+            if not c:
+                continue
+            is_full = (offering.capacity is not None and offering.enrolled is not None and offering.enrolled >= offering.capacity)
+            if is_full and not allow_overfull:
+                continue
+            candidates.append((code, offering, c.credits or 0))
+        # backtracking selection to maximize credits while avoiding time conflicts
+        selected = []
+        if candidates:
+            candidates.sort(key=lambda tup: tup[2], reverse=True)
+            best_set = []
+            best_credit = 0
+            n = len(candidates)
+            def dfs(idx: int, cur: List[tuple], cur_credit: int):
+                nonlocal best_set, best_credit
+                if cur_credit > best_credit and cur_credit <= target_credits:
+                    best_set = cur.copy()
+                    best_credit = cur_credit
+                if idx >= n:
+                    return
+                for j in range(idx, n):
+                    code_j, off_j, cred_j = candidates[j]
+                    if cur_credit + cred_j > target_credits:
+                        continue
+                    conflict = False
+                    for (_, off_k, _) in cur:
+                        if times_conflict(off_j, off_k):
+                            conflict = True
+                            break
+                    if conflict:
+                        continue
+                    cur.append((code_j, off_j, cred_j))
+                    dfs(j + 1, cur, cur_credit + cred_j)
+                    cur.pop()
+            dfs(0, [], 0)
+            selected = best_set
+        semester_courses = []
+        credits = 0
+        for code, offering, cred in selected:
+            c = code_to_course.get(code)
+            if not c:
+                continue
+            offering_info = {
+                'id': offering.id,
+                'section': offering.section,
+                'days': offering.days,
+                'start_time': offering.start_time,
+                'end_time': offering.end_time,
+                'instructor': offering.instructor,
+                'location': offering.location,
+                'capacity': offering.capacity,
+                'enrolled': offering.enrolled,
+                'status': 'confirmed' if (offering.capacity is None or (offering.enrolled is None or offering.enrolled < offering.capacity)) else 'full',
+            }
+            if offering_info['status'] == 'full' and not allow_overfull:
+                continue
+            if reserve_seats and offering.enrolled is not None:
+                offering.enrolled = offering.enrolled + 1
+            semester_courses.append({
+                'course_code': code,
+                'name': c.name,
+                'credits': c.credits,
+                'offering': offering_info,
+            })
+            credits += c.credits or 0
+            scheduled.add(code)
+        plan.append({'semester': sem_label, 'courses': semester_courses, 'total_credits': credits})
+        sem_label = _next_semester_label(sem_label)
+    return plan
         term_count += 1
         # eligible: prerequisites subset of completed
         eligible = [code for code in remaining if prereq_map.get(code, set()).issubset(completed)]

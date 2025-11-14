@@ -18,6 +18,7 @@ class FourYearRequest(BaseModel):
     max_credits_per_semester: Optional[int] = 15
     allow_overfull: Optional[bool] = False
     reserve_seats: Optional[bool] = False
+    balance_load: Optional[bool] = True
 
 
 @router.post("/four_year")
@@ -39,6 +40,7 @@ def plan_four_year(request: FourYearRequest, db: Session = Depends(get_db)):
         max_terms=max_terms,
         allow_overfull=request.allow_overfull or False,
         reserve_seats=request.reserve_seats or False,
+        balance_load=request.balance_load if request.balance_load is not None else True,
     )
 
     if plan is None:
