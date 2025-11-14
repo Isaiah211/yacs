@@ -16,6 +16,8 @@ class OptimizeRequest(BaseModel):
     max_credits_per_semester: Optional[int] = 15
     start_semester: Optional[str] = None
     max_terms: Optional[int] = 12
+    allow_overfull: Optional[bool] = False
+    reserve_seats: Optional[bool] = False
 
 
 class SemesterPlan(BaseModel):
@@ -37,6 +39,8 @@ def optimize(request: OptimizeRequest, db: Session = Depends(get_db)):
         max_credits_per_semester=request.max_credits_per_semester or 15,
         start_semester=request.start_semester,
         max_terms=request.max_terms or 12,
+        allow_overfull=request.allow_overfull or False,
+        reserve_seats=request.reserve_seats or False,
     )
 
     if plan is None:

@@ -96,6 +96,8 @@ def optimize_pathway(
     max_credits_per_semester: int = 15,
     start_semester: Optional[str] = None,
     max_terms: int = 12,
+    allow_overfull: bool = False,
+    reserve_seats: bool = False,
 ) -> List[Dict]:
     """Return a semester-by-semester plan of courses (list of dicts).
 
@@ -161,15 +163,30 @@ def optimize_pathway(
 
         q = db.query(CourseOffering).filter(CourseOffering.course_id == course.id)
 
-        # prefer exact year match if year provided
+        # collect offerings for this term (exact year + recurring)
+        candidates = []
         if year is not None:
-            offered_year = q.filter((CourseOffering.year == year) & (CourseOffering.term == term)).first()
-            if offered_year:
-                return offered_year
+            candidates.extend(q.filter((CourseOffering.year == year) & (CourseOffering.term == term)).all())
+        candidates.extend(q.filter((CourseOffering.year == None) & (CourseOffering.term == term)).all())
 
-        # fallback to recurring offering (year NULL)
-        offered_recurring = q.filter((CourseOffering.year == None) & (CourseOffering.term == term)).first()
-        return offered_recurring
+        if not candidates:
+            return None
+
+        # prefer an offering with available seats
+        for off in candidates:
+            if off.capacity is None:
+                return off
+            if off.enrolled is None:
+                # treat as available
+                return off
+            if off.enrolled < off.capacity:
+                return off
+
+        # if none have space, allow overfull if requested (return first candidate marked full)
+        if allow_overfull:
+            return candidates[0]
+
+        return None
 
 
     while remaining and term_count < max_terms:
@@ -177,29 +194,127 @@ def optimize_pathway(
         # eligible: prerequisites subset of completed
         eligible = [code for code in remaining if prereq_map.get(code, set()).issubset(completed)]
 
-        # filter by offerings for this term
-        offered_now = [code for code in eligible if offered_this_term(code, sem_label)]
-
-        # sort eligible by numeric level if possible (e.g., CSCI-1100 -> 1100), else by code
-        def sort_key(code: str):
-            parts = ''.join(ch if ch.isdigit() else ' ' for ch in code).split()
-            return int(parts[0]) if parts else 0
-
-        offered_now.sort(key=sort_key)
-
-        semester_courses = []
-        credits = 0
-        for code in offered_now:
-            c = code_to_course.get(code)
-            if not c:
-                continue
-            if credits + (c.credits or 0) > max_credits_per_semester:
-                continue
+        # filter by offerings for this term and select offering
+        offered_now_with_offering = []  # list of tuples (code, offering)
+        for code in eligible:
             offering = offered_this_term(code, sem_label)
-            # offering should be present in offered_now, but double-check
-            offering_info = None
             if offering:
+                offered_now_with_offering.append((code, offering))
+
+            # --- section/time conflict-aware selection ---
+            def sort_key(code: str):
+                parts = ''.join(ch if ch.isdigit() else ' ' for ch in code).split()
+                return int(parts[0]) if parts else 0
+
+            # helpers for day/time parsing and conflict detection
+            def parse_days(days: Optional[str]) -> Set[str]:
+                if not days:
+                    return set()
+                ds = set()
+                s = days.strip().upper()
+                if 'TR' in s:
+                    s = s.replace('TR', 'R')
+                for ch in s:
+                    if ch in ('M', 'T', 'W', 'R', 'F', 'S', 'U'):
+                        ds.add(ch)
+                return ds
+
+            def parse_time(tm: Optional[str]) -> Optional[int]:
+                if not tm:
+                    return None
+                t = tm.strip().upper()
+                try:
+                    if 'AM' in t or 'PM' in t:
+                        meridian = 'AM' if 'AM' in t else 'PM'
+                        tnum = t.replace('AM', '').replace('PM', '').strip()
+                        parts = tnum.split(':')
+                        hour = int(parts[0])
+                        minute = int(parts[1]) if len(parts) > 1 else 0
+                        if meridian == 'PM' and hour != 12:
+                            hour += 12
+                        if meridian == 'AM' and hour == 12:
+                            hour = 0
+                        return hour * 60 + minute
+                    else:
+                        parts = t.split(':')
+                        hour = int(parts[0])
+                        minute = int(parts[1]) if len(parts) > 1 else 0
+                        return hour * 60 + minute
+                except Exception:
+                    return None
+
+            def times_conflict(a: CourseOffering, b: CourseOffering) -> bool:
+                days_a = parse_days(a.days)
+                days_b = parse_days(b.days)
+                if not days_a or not days_b:
+                    return False
+                if days_a.isdisjoint(days_b):
+                    return False
+                a_s = parse_time(a.start_time)
+                a_e = parse_time(a.end_time)
+                b_s = parse_time(b.start_time)
+                b_e = parse_time(b.end_time)
+                if a_s is None or a_e is None or b_s is None or b_e is None:
+                    return False
+                return not (a_e <= b_s or b_e <= a_s)
+
+            # prepare candidates: (code, offering, credits)
+            candidates = []
+            for code, offering in offered_now_with_offering:
+                c = code_to_course.get(code)
+                if not c:
+                    continue
+                # skip full offerings unless allow_overfull
+                is_full = (offering.capacity is not None and offering.enrolled is not None and offering.enrolled >= offering.capacity)
+                if is_full and not allow_overfull:
+                    continue
+                candidates.append((code, offering, c.credits or 0))
+
+            # backtracking selection to maximize credits while avoiding time conflicts
+            selected = []
+            if candidates:
+                # sort to make search deterministic
+                candidates.sort(key=lambda tup: sort_key(tup[0]))
+
+                # simple DFS to find best non-conflicting subset of candidates
+                best_set: List[tuple] = []
+                best_credit = 0
+
+                n = len(candidates)
+
+                def dfs(idx: int, cur: List[tuple], cur_credit: int):
+                    nonlocal best_set, best_credit
+                    if cur_credit > best_credit:
+                        best_set = cur.copy()
+                        best_credit = cur_credit
+                    if idx >= n:
+                        return
+                    for j in range(idx, n):
+                        code_j, off_j, cred_j = candidates[j]
+                        if cur_credit + cred_j > max_credits_per_semester:
+                            continue
+                        conflict = False
+                        for (_, off_k, _) in cur:
+                            if times_conflict(off_j, off_k):
+                                conflict = True
+                                break
+                        if conflict:
+                            continue
+                        cur.append((code_j, off_j, cred_j))
+                        dfs(j + 1, cur, cur_credit + cred_j)
+                        cur.pop()
+
+                dfs(0, [], 0)
+                selected = best_set
+
+            semester_courses = []
+            credits = 0
+            for code, offering, cred in selected:
+                c = code_to_course.get(code)
+                if not c:
+                    continue
                 offering_info = {
+                    'id': offering.id,
                     'section': offering.section,
                     'days': offering.days,
                     'start_time': offering.start_time,
@@ -207,15 +322,20 @@ def optimize_pathway(
                     'instructor': offering.instructor,
                     'location': offering.location,
                     'capacity': offering.capacity,
+                    'enrolled': offering.enrolled,
+                    'status': 'confirmed' if (offering.capacity is None or (offering.enrolled is None or offering.enrolled < offering.capacity)) else 'full',
                 }
-
-            semester_courses.append({
-                'course_code': code,
-                'name': c.name,
-                'credits': c.credits,
-                'offering': offering_info,
-            })
-            credits += c.credits or 0
+                if offering_info['status'] == 'full' and not allow_overfull:
+                    continue
+                if reserve_seats and offering.enrolled is not None:
+                    offering.enrolled = offering.enrolled + 1
+                semester_courses.append({
+                    'course_code': code,
+                    'name': c.name,
+                    'credits': c.credits,
+                    'offering': offering_info,
+                })
+                credits += c.credits or 0
 
         # If no offered courses fit this semester but there are eligible courses, advance term
         if not semester_courses:
