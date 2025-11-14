@@ -28,6 +28,7 @@ app.add_middleware(SessionMiddleware, secret_key="a_very_secret_key")
 app.include_router(semester_controller.router, tags=["semesters"])
 app.include_router(pathway_controller.router, tags=["pathways"])
 app.include_router(optimizer_controller.router, tags=["optimizer"])
+app.include_router(four_year_controller.router, tags=["plan"])
 
 # --- API Endpoints ---
 
