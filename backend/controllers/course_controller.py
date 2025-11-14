@@ -875,3 +875,143 @@ def check_course_conflict(course1: Course, course2: Course) -> Dict:
             }
         }
     }
+
+
+def check_schedule_conflicts(course_ids: List[int], db: Session) -> Dict:
+    #check for conflicts from course ids
+    try:
+        #get all courses
+        courses = db.query(Course).filter(Course.id.in_(course_ids)).all()
+        
+        if len(courses) != len(course_ids):
+            return {
+                "success": False,
+                "error": "One or more courses not found"
+            }
+        
+        conflicts = []
+        
+        #check each pair of courses
+        for i in range(len(courses)):
+            for j in range(i + 1, len(courses)):
+                result = check_course_conflict(courses[i], courses[j])
+                if result["has_conflict"]:
+                    conflicts.append(result)
+        
+        return {
+            "success": True,
+            "has_conflicts": len(conflicts) > 0,
+            "conflict_count": len(conflicts),
+            "conflicts": conflicts,
+            "courses_checked": [c.to_dict() for c in courses]
+        }
+    
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def check_schedule_conflicts_by_codes(course_codes: List[str], semester: str, db: Session) -> Dict:
+    #check for conflicts by course codes
+    try:
+        #get all courses
+        courses = db.query(Course).filter(
+            Course.course_code.in_(course_codes),
+            Course.semester == semester
+        ).all()
+        
+        if len(courses) != len(course_codes):
+            found_codes = {c.course_code for c in courses}
+            missing = set(course_codes) - found_codes
+            return {
+                "success": False,
+                "error": f"Courses not found: {', '.join(missing)}"
+            }
+        
+        conflicts = []
+        
+        #check each pair of courses
+        for i in range(len(courses)):
+            for j in range(i + 1, len(courses)):
+                result = check_course_conflict(courses[i], courses[j])
+                if result["has_conflict"]:
+                    conflicts.append(result)
+        
+        return {
+            "success": True,
+            "has_conflicts": len(conflicts) > 0,
+            "conflict_count": len(conflicts),
+            "conflicts": conflicts,
+            "courses_checked": [c.to_dict() for c in courses]
+        }
+    
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def find_non_conflicting_courses(enrolled_course_ids: List[int], semester: str, db: Session, department: Optional[str] = None, level: Optional[str] = None) -> Dict:
+    #find courses that dont conflict with currently enrolled courses
+    try:
+        #get enrolled courses
+        enrolled_courses = db.query(Course).filter(
+            Course.id.in_(enrolled_course_ids)
+        ).all()
+        
+        #build query for available courses
+        query = db.query(Course).filter(Course.semester == semester)
+        
+        if department:
+            query = query.filter(Course.department == department)
+        
+        if level:
+            level_digit = level[0] if level else None
+            if level_digit:
+                query = query.filter(Course.course_code.ilike(f"%-{level_digit}___"))
+        
+        #exclude already enrolled courses
+        if enrolled_course_ids:
+            query = query.filter(~Course.id.in_(enrolled_course_ids))
+        
+        available_courses = query.all()
+        
+        #check each available course for conflicts
+        non_conflicting = []
+        conflicting = []
+        
+        for course in available_courses:
+            has_conflict = False
+            conflict_with = []
+            
+            for enrolled in enrolled_courses:
+                result = check_course_conflict(enrolled, course)
+                if result["has_conflict"]:
+                    has_conflict = True
+                    conflict_with.append({
+                        "course_code": enrolled.course_code,
+                        "course_name": enrolled.name,
+                        "reason": result["reason"]
+                    })
+            
+            if has_conflict:
+                conflicting.append({
+                    "course": course.to_dict(),
+                    "conflicts_with": conflict_with
+                })
+            else:
+                non_conflicting.append(course.to_dict())
+        
+        return {
+            "success": True,
+            "semester": semester,
+            "enrolled_courses": [c.to_dict() for c in enrolled_courses],
+            "non_conflicting_courses": non_conflicting,
+            "conflicting_courses": conflicting,
+            "stats": {
+                "total_available": len(available_courses),
+                "non_conflicting": len(non_conflicting),
+                "conflicting": len(conflicting)
+            }
+        }
+    
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    

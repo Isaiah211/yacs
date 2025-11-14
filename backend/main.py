@@ -2,7 +2,7 @@
 from fastapi import FastAPI, Request, Response
 from starlette.middleware.sessions import SessionMiddleware
 import os
-from typing import Optional
+from typing import Optional, List
 
 # Import Pydantic models and controllers
 from fastapi import Depends
@@ -221,6 +221,35 @@ async def get_course_levels(department: Optional[str] = None, db: Session = Depe
 @app.get('/api/courses/department/{department}/level/{level}')
 async def get_courses_by_dept_level(department: str, level: str, semester: Optional[str] = None, db: Session = Depends(get_db)):
     return course_controller.get_courses_by_department_level(db, department, level, semester)
+
+#conflict detection endpoints
+@app.post('/api/courses/check-conflicts')
+async def check_conflicts(course_ids: List[int], db: Session = Depends(get_db)):
+    """
+    check scheduling conflicts by ids
+    returns:
+        has_conflicts: boolean
+        conflict_count: # of conflicts
+        conflicts: list of conflict details
+        courses_checked: details of all courses checked
+    """
+    return course_controller.check_schedule_conflicts(course_ids, db)
+
+@app.post('/api/courses/check-conflicts-by-code')
+async def check_conflicts_by_code(course_codes: List[str], semester: str, db: Session = Depends(get_db)):
+    #check scheduling conflicts by course codes
+    return course_controller.check_schedule_conflicts_by_codes(course_codes, semester, db)
+
+@app.post('/api/courses/find-non-conflicting')
+async def find_non_conflicting(enrolled_course_ids: List[int], semester: str, department: Optional[str] = None, level: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    find courses that dont conflict with currently enrolled courses
+    returns:
+        enrolled_courses
+        non_conflicting_courses: courses without conflicts
+        conflicting_courses: courses with conflicts
+    """
+    return course_controller.find_non_conflicting_courses(enrolled_course_ids, semester, db, department, level)
 
 
 # --- Add your Course, Professor, and other endpoints below ---
