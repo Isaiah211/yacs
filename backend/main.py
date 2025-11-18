@@ -29,6 +29,7 @@ app.include_router(semester_controller.router, tags=["semesters"])
 app.include_router(pathway_controller.router, tags=["pathways"])
 app.include_router(optimizer_controller.router, tags=["optimizer"])
 app.include_router(four_year_controller.router, tags=["plan"])
+app.include_router(preferences_controller.router, tags=["preferences"])
 
 # --- API Endpoints ---
 
