@@ -15,6 +15,7 @@ from controllers import (
     user_controller, session_controller, course_controller,
     semester_controller, pathway_controller, optimizer_controller
 )
+from controllers import four_year_controller, preferences_controller, reservations_controller
 from tables.database import get_db
 from tables.course import Course
 
@@ -30,6 +31,7 @@ app.include_router(pathway_controller.router, tags=["pathways"])
 app.include_router(optimizer_controller.router, tags=["optimizer"])
 app.include_router(four_year_controller.router, tags=["plan"])
 app.include_router(preferences_controller.router, tags=["preferences"])
+app.include_router(reservations_controller.router, tags=["reservations"])
 
 # --- API Endpoints ---
 
