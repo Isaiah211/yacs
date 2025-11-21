@@ -9,11 +9,13 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 from api_models import (
     UserPydantic, SessionPydantic, CourseCreate,
-    CourseUpdate, CourseDelete, UserCoursePydantic
+    CourseUpdate, CourseDelete, UserCoursePydantic,
+    CourseReviewCreate, CourseReviewUpdate
 )
 from controllers import (
     user_controller, session_controller, course_controller,
-    semester_controller, pathway_controller, optimizer_controller
+    semester_controller, pathway_controller, optimizer_controller,
+    review_controller
 )
 from controllers import four_year_controller, preferences_controller, reservations_controller
 from tables.database import get_db
@@ -253,6 +255,39 @@ async def find_non_conflicting(enrolled_course_ids: List[int], semester: str, de
         conflicting_courses: courses with conflicts
     """
     return course_controller.find_non_conflicting_courses(enrolled_course_ids, semester, db, department, level)
+
+#course review endpoints
+@app.post('/api/courses/{course_code}/reviews')
+async def add_course_review(course_code: str, review: CourseReviewCreate, semester: Optional[str] = None, db: Session = Depends(get_db)):
+    payload = review.model_dump(exclude_unset=True)
+    payload['course_code'] = course_code
+    if semester:
+        payload['semester'] = semester
+    return review_controller.create_review(payload, db)
+
+@app.get('/api/courses/{course_code}/reviews')
+async def list_course_reviews(course_code: str, semester: Optional[str] = None, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
+    return review_controller.list_reviews(db, course_code=course_code, semester=semester, limit=limit, offset=offset)
+
+@app.get('/api/reviews/{review_id}')
+async def get_single_review(review_id: int, db: Session = Depends(get_db)):
+    return review_controller.get_review(review_id, db)
+
+@app.put('/api/reviews/{review_id}')
+async def update_course_review(review_id: int, updates: CourseReviewUpdate, db: Session = Depends(get_db)):
+    return review_controller.update_review(review_id, updates.model_dump(exclude_unset=True), db)
+
+@app.delete('/api/reviews/{review_id}')
+async def delete_course_review(review_id: int, db: Session = Depends(get_db)):
+    return review_controller.delete_review(review_id, db)
+
+@app.get('/api/courses/{course_code}/reviews/summary')
+async def get_course_review_summary(course_code: str, semester: Optional[str] = None, db: Session = Depends(get_db)):
+    return review_controller.get_course_rating_summary(db, course_code=course_code, semester=semester)
+
+@app.get('/api/courses/top-rated')
+async def get_top_rated_courses(semester: Optional[str] = None, department: Optional[str] = None, min_reviews: int = 3, limit: int = 10, db: Session = Depends(get_db)):
+    return review_controller.get_top_rated_courses(db, semester=semester, department=department, min_reviews=min_reviews, limit=limit)
 
 
 # --- Add your Course, Professor, and other endpoints below ---

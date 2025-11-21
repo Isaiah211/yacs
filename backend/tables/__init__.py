@@ -14,3 +14,4 @@ from .course_prerequisite import CoursePrerequisite
 from .course_corequisite import CourseCorequisite
 from .semester_info import SemesterInfo
 from .professor import Professor
+from .course_review import CourseReview
