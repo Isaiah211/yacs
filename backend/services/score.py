@@ -44,7 +44,7 @@ def minutes_between(t1, t2) -> int:
     return int((dt2 - dt1).total_seconds() // 60)
 
 
-def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None, db=None) -> Dict[str, Any]:
+def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None, db=None, preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Score a list of course-like objects. Each course should have attributes:
       - id, course_code, days_of_week, start_time, end_time
@@ -52,11 +52,19 @@ def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None
     Returns a dict with numeric score and breakdown.
     """
     if weights is None:
+        # Tuned defaults:
+        # - very large penalty for conflicts to prioritize conflict-free schedules
+        # - moderately small penalty per-minute gap (encourages compact schedules but not too harsh)
+        # - larger rating weight to prefer higher-rated course combinations
+        # - day_penalty penalizes schedules spread over many distinct days
+        # - compactness_reward gives extra score for schedules using fewer distinct days
         weights = {
-            'conflict_penalty': 200.0,
-            'gap_penalty_per_minute': 1.0,
-            'rating_weight': 10.0,
-            'base': 1000.0
+            'conflict_penalty': 1000.0,
+            'gap_penalty_per_minute': 0.5,
+            'rating_weight': 20.0,
+            'day_penalty_per_day': 75.0,
+            'compactness_reward': 50.0,
+            'base': 500.0
         }
 
     # detect conflicts
@@ -114,12 +122,77 @@ def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None
         if rating_count:
             avg_rating = rating_sum / rating_count
 
+    # normalize preferences dict
+    prefs = preferences or {}
+    # if preferences contains SQLAlchemy object with to_dict, normalize
+    if hasattr(prefs, 'to_dict'):
+        try:
+            prefs = prefs.to_dict()
+        except Exception:
+            prefs = dict()
+
+    avoid_mornings = bool(prefs.get('avoid_mornings', False))
+    avoid_evenings = bool(prefs.get('avoid_evenings', False))
+    unavailable_days = (prefs.get('unavailable_days') or '')
+    preferred_instructors = set([s.strip().lower() for s in (prefs.get('preferred_instructors') or []) if s and s.strip()]) if isinstance(prefs.get('preferred_instructors'), list) else set([s.strip().lower() for s in (prefs.get('preferred_instructors') or '').split(',') if s.strip()])
+
+    # additional metric: distinct days used
+    all_days = set()
+    for c in courses:
+        if getattr(c, 'days_of_week', None):
+            all_days |= set(getattr(c, 'days_of_week').upper())
+    # only count typical weekday letters
+    valid_days = set('MTWRF')
+    distinct_days = len(all_days & valid_days)
+
     # scoring formula
     score = weights.get('base', 0.0)
     score -= conflict_count * weights.get('conflict_penalty', 100.0)
     score -= total_gaps_minutes * weights.get('gap_penalty_per_minute', 1.0)
+    # penalize spread across many days
+    score -= distinct_days * weights.get('day_penalty_per_day', 0.0)
+    # reward compactness (fewer days) relative to a 5-day baseline
+    max_days = 5
+    compactness_bonus = max(0, (max_days - distinct_days)) * weights.get('compactness_reward', 0.0)
+    score += compactness_bonus
     if avg_rating is not None:
         score += avg_rating * weights.get('rating_weight', 5.0) * len(courses)
+
+    # apply preference penalties/rewards
+    pref_penalties = []
+    if unavailable_days:
+        udays = set(unavailable_days.upper())
+        for c in courses:
+            if getattr(c, 'days_of_week', None) and udays & set(c.days_of_week.upper()):
+                penalty = weights.get('unavailable_day_penalty', 500.0)
+                score -= penalty
+                pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'unavailable_day', 'penalty': penalty})
+
+    if avoid_mornings:
+        # penalize courses that start before 10:00
+        for c in courses:
+            st = _to_time_obj(getattr(c, 'start_time', None))
+            if st and st.hour < 10:
+                penalty = weights.get('avoid_morning_penalty', 150.0)
+                score -= penalty
+                pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'avoid_morning', 'penalty': penalty})
+
+    if avoid_evenings:
+        # penalize courses that end after 18:00
+        for c in courses:
+            et = _to_time_obj(getattr(c, 'end_time', None))
+            if et and et.hour >= 18:
+                penalty = weights.get('avoid_evening_penalty', 150.0)
+                score -= penalty
+                pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'avoid_evening', 'penalty': penalty})
+
+    if preferred_instructors:
+        for c in courses:
+            instr = getattr(c, 'instructor', None)
+            if instr and instr.strip().lower() in preferred_instructors:
+                reward = weights.get('preferred_instructor_reward', 75.0)
+                score += reward
+                pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'preferred_instructor', 'reward': reward})
 
     return {
         'score': score,
@@ -128,7 +201,10 @@ def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None
             'conflict_count': conflict_count,
             'conflicts': conflicts,
             'total_gaps_minutes': total_gaps_minutes,
-            'avg_rating': avg_rating
+            'distinct_days': distinct_days,
+            'compactness_bonus': compactness_bonus,
+            'avg_rating': avg_rating,
+            'preference_adjustments': pref_penalties
         },
         'weights': weights
     }

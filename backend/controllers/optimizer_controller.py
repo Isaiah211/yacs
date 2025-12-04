@@ -32,6 +32,9 @@ class SemesterPlan(BaseModel):
 class ScoreRequest(BaseModel):
     course_ids: List[int]
     weights: Optional[Dict[str, float]] = None
+    user_id: Optional[int] = None
+    # inline preferences may be provided to override/replace stored preferences
+    preferences: Optional[Dict[str, Any]] = None
 
 
 @router.post("/", response_model=List[SemesterPlan])
@@ -76,6 +79,23 @@ def optimize(request: OptimizeRequest, db: Session = Depends(get_db)):
 def score_schedule_endpoint(req: ScoreRequest, db: Session = Depends(get_db)):
     """Score a proposed schedule (list of course ids) and return breakdown."""
     from ..services import score as score_service
+    from ..tables.student_preferences import StudentPreferences
 
-    result = score_service.score_schedule(req.course_ids, db, weights=req.weights)
+    prefs = None
+    # if preferences included in payload use them
+    if req.preferences:
+        prefs = req.preferences
+    # else if user_id provided, fetch stored preferences
+    elif req.user_id:
+        prefs_obj = db.query(StudentPreferences).filter(StudentPreferences.user_id == req.user_id).first()
+        if prefs_obj:
+            prefs = prefs_obj.to_dict()
+
+    # score_schedule in service expects course ids and db; we will fetch courses and call score_courses to pass preferences
+    from tables.course import Course as CourseModel
+    courses = db.query(CourseModel).filter(CourseModel.id.in_(req.course_ids)).all()
+    if len(courses) != len(req.course_ids):
+        return {'error': 'One or more courses not found', 'requested': len(req.course_ids), 'found': len(courses)}
+
+    result = score_service.score_courses(courses, weights=req.weights, db=db, preferences=prefs)
     return result
