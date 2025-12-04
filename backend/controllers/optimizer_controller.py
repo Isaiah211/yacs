@@ -29,6 +29,11 @@ class SemesterPlan(BaseModel):
     total_credits: int
 
 
+class ScoreRequest(BaseModel):
+    course_ids: List[int]
+    weights: Optional[Dict[str, float]] = None
+
+
 @router.post("/", response_model=List[SemesterPlan])
 def optimize(request: OptimizeRequest, db: Session = Depends(get_db)):
     if not request.pathway_id and not request.pathway_code:
@@ -65,3 +70,12 @@ def optimize(request: OptimizeRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to generate plan")
 
     return plan
+
+
+@router.post('/score')
+def score_schedule_endpoint(req: ScoreRequest, db: Session = Depends(get_db)):
+    """Score a proposed schedule (list of course ids) and return breakdown."""
+    from ..services import score as score_service
+
+    result = score_service.score_schedule(req.course_ids, db, weights=req.weights)
+    return result
