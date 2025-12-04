@@ -16,6 +16,14 @@ class PreferencesIn(BaseModel):
     avoid_mornings: Optional[bool] = False
     avoid_evenings: Optional[bool] = False
     preferred_instructors: Optional[list] = None
+    earliest_start_time: Optional[str] = None
+    latest_end_time: Optional[str] = None
+    max_days_per_week: Optional[int] = None
+    preferred_days: Optional[str] = None
+    max_gaps_per_day: Optional[int] = None
+    contiguous_classes: Optional[bool] = False
+    preferred_locations: Optional[list] = None
+    preferred_time_of_day: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -43,6 +51,23 @@ def set_preferences(user_id: int, prefs_in: PreferencesIn, db: Session = Depends
     prefs.avoid_evenings = prefs_in.avoid_evenings
     if prefs_in.preferred_instructors is not None:
         prefs.preferred_instructors = ','.join(prefs_in.preferred_instructors)
+    if prefs_in.earliest_start_time is not None:
+        from datetime import datetime
+        prefs.earliest_start_time = datetime.strptime(prefs_in.earliest_start_time, '%H:%M:%S').time()
+    if prefs_in.latest_end_time is not None:
+        from datetime import datetime
+        prefs.latest_end_time = datetime.strptime(prefs_in.latest_end_time, '%H:%M:%S').time()
+    if prefs_in.max_days_per_week is not None:
+        prefs.max_days_per_week = prefs_in.max_days_per_week
+    if prefs_in.preferred_days is not None:
+        prefs.preferred_days = prefs_in.preferred_days
+    if prefs_in.max_gaps_per_day is not None:
+        prefs.max_gaps_per_day = prefs_in.max_gaps_per_day
+    prefs.contiguous_classes = prefs_in.contiguous_classes
+    if prefs_in.preferred_locations is not None:
+        prefs.preferred_locations = ','.join(prefs_in.preferred_locations)
+    if prefs_in.preferred_time_of_day is not None:
+        prefs.preferred_time_of_day = prefs_in.preferred_time_of_day
     if prefs_in.notes is not None:
         prefs.notes = prefs_in.notes
 

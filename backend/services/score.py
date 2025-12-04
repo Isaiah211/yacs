@@ -64,7 +64,19 @@ def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None
             'rating_weight': 20.0,
             'day_penalty_per_day': 75.0,
             'compactness_reward': 50.0,
-            'base': 500.0
+                'base': 500.0,
+                # preference-related default penalties/rewards
+                'unavailable_day_penalty': 500.0,
+                'avoid_morning_penalty': 150.0,
+                'avoid_evening_penalty': 150.0,
+                'preferred_instructor_reward': 75.0,
+                'outside_window_penalty': 200.0,
+                'max_days_penalty': 100.0,
+                'preferred_day_reward': 50.0,
+                'max_gaps_penalty': 1.0,  # per minute over limit
+                'contiguous_bonus': 100.0,
+                'preferred_location_reward': 50.0,
+                'preferred_time_reward': 50.0
         }
 
     # detect conflicts
@@ -134,7 +146,16 @@ def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None
     avoid_mornings = bool(prefs.get('avoid_mornings', False))
     avoid_evenings = bool(prefs.get('avoid_evenings', False))
     unavailable_days = (prefs.get('unavailable_days') or '')
-    preferred_instructors = set([s.strip().lower() for s in (prefs.get('preferred_instructors') or []) if s and s.strip()]) if isinstance(prefs.get('preferred_instructors'), list) else set([s.strip().lower() for s in (prefs.get('preferred_instructors') or '').split(',') if s.strip()])
+        preferred_instructors = set([s.strip().lower() for s in (prefs.get('preferred_instructors') or []) if s and s.strip()]) if isinstance(prefs.get('preferred_instructors'), list) else set([s.strip().lower() for s in (prefs.get('preferred_instructors') or '').split(',') if s.strip()])
+        # new preference types
+        earliest_start_time = _to_time_obj(prefs.get('earliest_start_time'))
+        latest_end_time = _to_time_obj(prefs.get('latest_end_time'))
+        max_days_per_week = prefs.get('max_days_per_week')
+        preferred_days = (prefs.get('preferred_days') or '')
+        max_gaps_per_day = prefs.get('max_gaps_per_day')
+        contiguous_classes = bool(prefs.get('contiguous_classes', False))
+        preferred_locations = set([s.strip().lower() for s in (prefs.get('preferred_locations') or []) if s and s.strip()]) if isinstance(prefs.get('preferred_locations'), list) else set([s.strip().lower() for s in (prefs.get('preferred_locations') or '').split(',') if s.strip()])
+        preferred_time_of_day = (prefs.get('preferred_time_of_day') or '').lower()
 
     # additional metric: distinct days used
     all_days = set()
@@ -193,6 +214,92 @@ def score_courses(courses: List[Any], weights: Optional[Dict[str, float]] = None
                 reward = weights.get('preferred_instructor_reward', 75.0)
                 score += reward
                 pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'preferred_instructor', 'reward': reward})
+
+        # window constraints
+        if earliest_start_time or latest_end_time:
+            for c in courses:
+                st = _to_time_obj(getattr(c, 'start_time', None))
+                et = _to_time_obj(getattr(c, 'end_time', None))
+                if earliest_start_time and st and st < earliest_start_time:
+                    penalty = weights.get('outside_window_penalty', 200.0)
+                    score -= penalty
+                    pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'starts_before_earliest', 'penalty': penalty})
+                if latest_end_time and et and et > latest_end_time:
+                    penalty = weights.get('outside_window_penalty', 200.0)
+                    score -= penalty
+                    pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'ends_after_latest', 'penalty': penalty})
+
+        # preferred days/locations/time of day
+        if preferred_days:
+            pdays = set(preferred_days.upper())
+            for c in courses:
+                if getattr(c, 'days_of_week', None) and pdays & set(c.days_of_week.upper()):
+                    reward = weights.get('preferred_day_reward', 50.0)
+                    score += reward
+                    pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'preferred_day', 'reward': reward})
+
+        if preferred_locations:
+            for c in courses:
+                loc = getattr(c, 'location', None)
+                if loc and loc.strip().lower() in preferred_locations:
+                    reward = weights.get('preferred_location_reward', 50.0)
+                    score += reward
+                    pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'preferred_location', 'reward': reward})
+
+        if preferred_time_of_day:
+            for c in courses:
+                st = _to_time_obj(getattr(c, 'start_time', None))
+                if not st:
+                    continue
+                if preferred_time_of_day == 'morning' and st.hour < 12:
+                    reward = weights.get('preferred_time_reward', 50.0)
+                    score += reward
+                    pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'preferred_time_morning', 'reward': reward})
+                if preferred_time_of_day == 'afternoon' and st.hour >= 12:
+                    reward = weights.get('preferred_time_reward', 50.0)
+                    score += reward
+                    pref_penalties.append({'course': getattr(c, 'course_code', None), 'reason': 'preferred_time_afternoon', 'reward': reward})
+
+        # max days per week penalty
+        if max_days_per_week is not None and distinct_days > max_days_per_week:
+            excess = distinct_days - max_days_per_week
+            penalty = excess * weights.get('max_days_penalty', 100.0)
+            score -= penalty
+            pref_penalties.append({'reason': 'exceeds_max_days', 'excess_days': excess, 'penalty': penalty})
+
+        # max gaps per day penalty and contiguous_classes bonus
+        if max_gaps_per_day is not None or contiguous_classes:
+            # compute gaps per day
+            gaps_by_day = {}
+            weekdays = list('MTWRFS')
+            for day in weekdays:
+                day_courses = [c for c in courses if c.days_of_week and day in c.days_of_week.upper() and c.start_time and c.end_time]
+                if not day_courses:
+                    continue
+                day_courses.sort(key=lambda c: _to_time_obj(c.start_time) or time(0, 0))
+                day_gaps = 0
+                for a, b in zip(day_courses, day_courses[1:]):
+                    gap = minutes_between(a.end_time, b.start_time)
+                    if gap > 0:
+                        day_gaps += gap
+                gaps_by_day[day] = day_gaps
+
+            if max_gaps_per_day is not None:
+                for d, g in gaps_by_day.items():
+                    if g > max_gaps_per_day:
+                        over = g - max_gaps_per_day
+                        penalty = over * weights.get('max_gaps_penalty', 1.0)
+                        score -= penalty
+                        pref_penalties.append({'day': d, 'over_minutes': over, 'penalty': penalty})
+
+            if contiguous_classes:
+                # reward schedules that have low total gaps
+                total_gaps = sum(gaps_by_day.values()) if gaps_by_day else 0
+                # scale reward inversely to total_gaps (no gaps -> full bonus)
+                bonus = max(0, weights.get('contiguous_bonus', 100.0) - (total_gaps * 0.2))
+                if bonus > 0:
+                    score += bonus
+                    pref_penalties.append({'reason': 'contiguous_bonus', 'bonus': bonus, 'total_gaps': total_gaps})
 
     return {
         'score': score,

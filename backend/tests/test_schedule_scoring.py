@@ -33,3 +33,16 @@ def test_preferences_avoid_mornings():
 
     # afternoon schedule should score higher because morning is penalized
     assert score_afternoon['score'] > score_morning['score']
+
+
+def test_preferences_earliest_start_window():
+    # user requires classes not to start before 10:00
+    early = make_course('ENG-1000', 'MWF', '09:00:00', '10:00:00', cid=20)
+    ok = make_course('ENG-1010', 'MWF', '10:30:00', '11:45:00', cid=21)
+
+    prefs = {'earliest_start_time': '10:00:00'}
+
+    score_early = score_courses([early], preferences=prefs)
+    score_ok = score_courses([ok], preferences=prefs)
+
+    assert score_ok['score'] > score_early['score']
