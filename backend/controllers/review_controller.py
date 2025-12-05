@@ -126,3 +126,95 @@ def delete_review(review_id: int, db: Session) -> Dict:
     except Exception as e:
         db.rollback()
         return {"success": False, "error": str(e)}
+
+def get_course_rating_summary(db: Session, course_id: Optional[int] = None, course_code: Optional[str] = None, semester: Optional[str] = None) -> Dict:
+    try:
+        query = db.query(
+            func.count(CourseReview.id).label('count'),
+            func.avg(CourseReview.rating).label('avg_rating'),
+            func.avg(CourseReview.difficulty).label('avg_difficulty'),
+            func.avg(CourseReview.workload_hours).label('avg_workload'),
+            func.sum(case((CourseReview.would_recommend == True, 1), else_=0)).label('recommendations')
+        ).join(Course)
+
+        if course_id is not None:
+            query = query.filter(CourseReview.course_id == course_id)
+        elif course_code:
+            query = query.filter(Course.course_code == course_code)
+        if semester:
+            query = query.filter(CourseReview.semester == semester)
+
+        result = query.first()
+        count = result.count if result and result.count else 0
+
+        if count == 0:
+            return {
+                "success": True,
+                "summary": {
+                    "count": 0,
+                    "average_rating": None,
+                    "average_difficulty": None,
+                    "average_workload": None,
+                    "recommendation_rate": None
+                }
+            }
+
+        recommend_rate = None
+        if result.recommendations is not None and count > 0:
+            recommend_rate = float(result.recommendations)/count
+
+        return {
+            "success": True,
+            "summary": {
+                "count": count,
+                "average_rating": round(float(result.avg_rating), 2) if result.avg_rating else None,
+                "average_difficulty": round(float(result.avg_difficulty), 2) if result.avg_difficulty else None,
+                "average_workload": round(float(result.avg_workload), 2) if result.avg_workload else None,
+                "recommendation_rate": round(recommend_rate, 2) if recommend_rate is not None else None
+            }
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_top_rated_courses(db: Session, semester: Optional[str] = None, department: Optional[str] = None, min_reviews: int = 3, limit: int = 10) -> Dict:
+    try:
+        query = db.query(
+            Course.id.label('course_id'),
+            Course.course_code,
+            Course.name,
+            Course.department,
+            Course.semester,
+            func.count(CourseReview.id).label('count'),
+            func.avg(CourseReview.rating).label('avg_rating')
+        ).join(CourseReview, Course.id == CourseReview.course_id)
+
+        if semester:
+            query = query.filter(CourseReview.semester == semester)
+        if department:
+            query = query.filter(Course.department == department)
+
+        query = (
+            query.group_by(Course.id)
+            .having(func.count(CourseReview.id) >= min_reviews)
+            .order_by(func.avg(CourseReview.rating).desc())
+            .limit(limit)
+        )
+
+        rows = query.all()
+        return {
+            "success": True,
+            "courses": [
+                {
+                    "course_id": row.course_id,
+                    "course_code": row.course_code,
+                    "name": row.name,
+                    "department": row.department,
+                    "semester": row.semester,
+                    "review_count": row.count,
+                    "average_rating": round(float(row.avg_rating), 2) if row.avg_rating else None
+                }
+                for row in rows
+            ]
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
