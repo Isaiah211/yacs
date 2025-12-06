@@ -19,6 +19,14 @@ class CourseReview(Base):
     comment = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    is_hidden = Column(Boolean, nullable=False, default=False)
+    flag_count = Column(Integer, nullable=False, default=0)
+    flagged_reason = Column(Text, nullable=True)
+    flagged_by = Column(String(255), nullable=True)
+    flagged_at = Column(DateTime(timezone=True), nullable=True)
+    moderation_notes = Column(Text, nullable=True)
+    moderated_by = Column(String(255), nullable=True)
+    moderated_at = Column(DateTime(timezone=True), nullable=True)
 
     course = relationship('Course', backref='reviews')
 
@@ -37,4 +45,12 @@ class CourseReview(Base):
             'comment': self.comment,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'is_hidden': self.is_hidden,
+            'flag_count': self.flag_count,
+            'flagged_reason': self.flagged_reason,
+            'flagged_by': self.flagged_by,
+            'flagged_at': self.flagged_at.isoformat() if self.flagged_at else None,
+            'moderation_notes': self.moderation_notes,
+            'moderated_by': self.moderated_by,
+            'moderated_at': self.moderated_at.isoformat() if self.moderated_at else None,
         }

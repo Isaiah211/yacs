@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from sqlalchemy import func, case
+from sqlalchemy import func, case, or_
 from sqlalchemy.orm import Session
 
 from ..tables.course import Course
@@ -53,7 +54,7 @@ def create_review(review_data: Dict, db: Session) -> Dict:
         db.rollback()
         return {"success": False, "error": str(e)}
 
-def list_reviews(db: Session, course_id: Optional[int] = None, course_code: Optional[str] = None, semester: Optional[str] = None, limit: int = 50, offset: int = 0) -> Dict:
+def list_reviews(db: Session, course_id: Optional[int] = None, course_code: Optional[str] = None, semester: Optional[str] = None, limit: int = 50, offset: int = 0, include_hidden: bool = False) -> Dict:
     try:
         query = db.query(CourseReview).join(Course)
 
@@ -65,6 +66,9 @@ def list_reviews(db: Session, course_id: Optional[int] = None, course_code: Opti
                 query = query.filter(CourseReview.semester == semester)
         elif semester:
             query = query.filter(CourseReview.semester == semester)
+
+        if not include_hidden:
+            query = query.filter(CourseReview.is_hidden == False)
 
         total = query.count()
         reviews = query.order_by(CourseReview.created_at.desc()).limit(limit).offset(offset).all()
@@ -125,6 +129,103 @@ def delete_review(review_id: int, db: Session) -> Dict:
         return {"success": True, "message": "Review deleted"}
     except Exception as e:
         db.rollback()
+        return {"success": False, "error": str(e)}
+
+def flag_review(review_id: int, db: Session, reason: Optional[str] = None, flagged_by: Optional[str] = None, auto_hide_threshold: int = 3) -> Dict:
+    try:
+        review = db.query(CourseReview).filter(CourseReview.id == review_id).first()
+        if not review:
+            return {"success": False, "error": "Review not found"}
+
+        review.flag_count = (review.flag_count or 0) + 1
+        review.flagged_reason = reason or review.flagged_reason
+        review.flagged_by = flagged_by or review.flagged_by
+        review.flagged_at = datetime.now(timezone.utc)
+
+        if auto_hide_threshold and review.flag_count >= auto_hide_threshold:
+            review.is_hidden = True
+
+        db.commit()
+        db.refresh(review)
+        return {"success": True, "review": review.to_dict()}
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+
+def set_review_visibility(review_id: int, hide: bool, db: Session, moderator: Optional[str] = None, notes: Optional[str] = None, reset_flags: bool = True) -> Dict:
+    try:
+        review = db.query(CourseReview).filter(CourseReview.id == review_id).first()
+        if not review:
+            return {"success": False, "error": "Review not found"}
+
+        review.is_hidden = hide
+        review.moderated_by = moderator or review.moderated_by
+        review.moderated_at = datetime.now(timezone.utc)
+        if notes is not None:
+            review.moderation_notes = notes
+
+        if not hide and reset_flags:
+            review.flag_count = 0
+            review.flagged_reason = None
+            review.flagged_by = None
+            review.flagged_at = None
+
+        db.commit()
+        db.refresh(review)
+        return {"success": True, "review": review.to_dict()}
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+
+def resolve_review_flags(review_id: int, db: Session, moderator: Optional[str] = None, notes: Optional[str] = None, keep_hidden: bool = False) -> Dict:
+    try:
+        review = db.query(CourseReview).filter(CourseReview.id == review_id).first()
+        if not review:
+            return {"success": False, "error": "Review not found"}
+
+        review.flag_count = 0
+        review.flagged_reason = None
+        review.flagged_by = None
+        review.flagged_at = None
+        review.moderated_by = moderator or review.moderated_by
+        review.moderated_at = datetime.utcnow()
+        if notes is not None:
+            review.moderation_notes = notes
+
+        if not keep_hidden:
+            review.is_hidden = False
+
+        db.commit()
+        db.refresh(review)
+        return {"success": True, "review": review.to_dict()}
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+
+def list_flagged_reviews(db: Session, limit: int = 50, offset: int = 0, show_resolved: bool = False) -> Dict:
+    try:
+        query = db.query(CourseReview).join(Course)
+        query = query.filter(
+            or_(CourseReview.flag_count > 0, CourseReview.is_hidden == True)
+        )
+
+        if not show_resolved:
+            query = query.filter(CourseReview.flag_count > 0)
+
+        total = query.count()
+        reviews = query.order_by(CourseReview.flagged_at.desc().nullslast()).limit(limit).offset(offset).all()
+
+        return {
+            "success": True,
+            "reviews": [review.to_dict() for review in reviews],
+            "metadata": {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "show_resolved": show_resolved
+            }
+        }
+    except Exception as e:
         return {"success": False, "error": str(e)}
 
 def get_course_rating_summary(db: Session, course_id: Optional[int] = None, course_code: Optional[str] = None, semester: Optional[str] = None) -> Dict:
