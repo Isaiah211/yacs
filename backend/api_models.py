@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Optional
 from datetime import time
 
 
@@ -95,6 +95,20 @@ class SubsemesterPydantic(BaseModel):
 
 class DefaultSemesterSetPydantic(BaseModel):
     default: str
+
+
+class CalendarExportRequest(BaseModel):
+    course_ids: Optional[List[int]] = Field(default=None, description="course ids to export")
+    course_codes: Optional[List[str]] = Field(default=None, description="course codes to export")
+    semester: Optional[str] = Field(default=None, description="semester name")
+    calendar_name: Optional[str] = Field(default="Course Schedule", min_length=1, max_length=128)
+    timezone: Optional[str] = Field(default="America/New_York", min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def ensure_selection(cls, values: "CalendarExportRequest"):
+        if not values.course_ids and not values.course_codes:
+            raise ValueError("provide course_ids or course_codes")
+        return values
 
 
     

@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, HTTPException
 from starlette.middleware.sessions import SessionMiddleware
 import os
 from typing import Optional, List
@@ -10,12 +10,12 @@ from sqlalchemy.orm import Session
 from api_models import (
     UserPydantic, SessionPydantic, CourseCreate,
     CourseUpdate, CourseDelete, UserCoursePydantic,
-    CourseReviewCreate, CourseReviewUpdate
+    CourseReviewCreate, CourseReviewUpdate, CalendarExportRequest
 )
 from controllers import (
     user_controller, session_controller, course_controller,
     semester_controller, pathway_controller, optimizer_controller,
-    review_controller
+    review_controller, calendar_controller
 )
 from controllers import four_year_controller, preferences_controller, reservations_controller
 from tables.database import get_db
@@ -255,6 +255,24 @@ async def find_non_conflicting(enrolled_course_ids: List[int], semester: str, de
         conflicting_courses: courses with conflicts
     """
     return course_controller.find_non_conflicting_courses(enrolled_course_ids, semester, db, department, level)
+
+#calendar exporting endpoint
+@app.post('/api/calendar/export')
+async def export_calendar(payload: CalendarExportRequest, db: Session = Depends(get_db)):
+    result = calendar_controller.build_calendar_export(db, course_ids=payload.course_ids, course_codes=payload.course_codes, semester=payload.semester, calendar_name=payload.calendar_name or "YACS Schedule", timezone=payload.timezone or "America/New_York")
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Unable to export calendar."))
+
+    filename = result.get("filename", "yacs-schedule.ics")
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+    metadata = result.get("metadata") or {}
+    headers["X-YACS-Exported"] = str(metadata.get("exported", 0))
+    if metadata.get("skipped"):
+        headers["X-YACS-Skipped"] = ",".join(metadata["skipped"])
+
+    return Response(content=result["ics"], media_type="text/calendar", headers=headers)
 
 #course review endpoints
 @app.post('/api/courses/{course_code}/reviews')
