@@ -3,6 +3,16 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from starlette.middleware.sessions import SessionMiddleware
 import os
 from typing import Optional, List
+import uuid
+import logging
+import json
+
+# async redis client
+import redis.asyncio as aioredis
+from pythonjsonlogger import jsonlogger
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 # Import Pydantic models and controllers
 from fastapi import Depends
@@ -35,6 +45,75 @@ app.include_router(optimizer_controller.router, tags=["optimizer"])
 app.include_router(four_year_controller.router, tags=["plan"])
 app.include_router(preferences_controller.router, tags=["preferences"])
 app.include_router(reservations_controller.router, tags=["reservations"])
+
+
+# --- Structured logging setup ---
+logger = logging.getLogger("yacs")
+logger.setLevel(logging.INFO)
+logHandler = logging.StreamHandler()
+formatter = jsonlogger.JsonFormatter('%(asctime)s %(name)s %(levelname)s %(message)s')
+logHandler.setFormatter(formatter)
+logger.addHandler(logHandler)
+
+
+# --- Redis client setup (attached to app.state) ---
+@app.on_event("startup")
+async def startup_event():
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    try:
+        app.state.redis = aioredis.from_url(redis_url, decode_responses=True)
+        # test connection
+        await app.state.redis.ping()
+        logger.info("redis_connected")
+    except Exception as e:
+        app.state.redis = None
+        logger.warning(f"Redis not available: {e}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    r = getattr(app.state, "redis", None)
+    if r:
+        try:
+            await r.close()
+        except Exception:
+            pass
+
+
+# --- Middleware: attach request id and basic request logging ---
+@app.middleware("http")
+async def add_request_id_and_log(request: Request, call_next):
+    request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+    logger.info("request_start", extra={"path": request.url.path, "method": request.method, "request_id": request_id})
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    logger.info("request_end", extra={"path": request.url.path, "method": request.method, "status_code": response.status_code, "request_id": request_id})
+    return response
+
+
+# --- Helper functions for simple Redis caching ---
+async def _get_cached(key: str):
+    r = getattr(app.state, "redis", None)
+    if not r:
+        return None
+    try:
+        raw = await r.get(key)
+        if not raw:
+            return None
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+async def _set_cached(key: str, value, ttl: int = 300):
+    r = getattr(app.state, "redis", None)
+    if not r:
+        return
+    try:
+        await r.set(key, json.dumps(value), ex=ttl)
+    except Exception:
+        return
 
 # --- API Endpoints ---
 
@@ -73,12 +152,18 @@ async def create_course(
     return course_controller.create_course(course.dict(), db)
 
 @app.get('/api/courses')
-async def get_courses(
-    semester: Optional[str] = None,
-    department: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    return course_controller.get_courses(semester, department, db)
+async def get_courses(request: Request, semester: Optional[str] = None, department: Optional[str] = None, db: Session = Depends(get_db)):
+    """Return courses, with a short Redis-backed cache keyed by semester+department."""
+    cache_key = f"get_courses:semester={semester or ''}:department={department or ''}"
+    cached = await _get_cached(cache_key)
+    if cached is not None:
+        return JSONResponse(content=cached)
+
+    # run controller in threadpool to avoid blocking event loop
+    result = await run_in_threadpool(course_controller.get_courses, semester, department, db)
+    enc = jsonable_encoder(result)
+    await _set_cached(cache_key, enc, ttl=300)
+    return enc
 
 @app.get('/api/courses/{course_code}')
 async def get_course(
@@ -179,7 +264,7 @@ async def get_courses_requiring_coreq(course_code: str, db: Session = Depends(ge
     return [{"course_code": c.course_code, "title": getattr(c, "title", None)} for c in courses]
 
 @app.get('/api/courses/search')
-async def search_courses(
+async def search_courses(request: Request,
     query: Optional[str] = None,
     semester: Optional[str] = None,
     department: Optional[str] = None,
@@ -195,22 +280,36 @@ async def search_courses(
     offset: Optional[int] = 0,
     db: Session = Depends(get_db)
 ):
-    return course_controller.search_courses(
-        db=db,
-        query=query,
-        semester=semester,
-        department=department,
-        credits=credits,
-        instructor=instructor,
-        min_credits=min_credits,
-        max_credits=max_credits,
-        level=level,
-        has_capacity=has_capacity,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        limit=limit,
-        offset=offset
+    # use query params map to build cache key (simple)
+    qitems = sorted(list(request.query_params.items()))
+    cache_key = f"search_courses:{qitems}"
+    cached = await _get_cached(cache_key)
+    if cached is not None:
+        return JSONResponse(content=cached)
+
+    result = await run_in_threadpool(
+        course_controller.search_courses,
+        {
+            'db': db,
+            'query': query,
+            'semester': semester,
+            'department': department,
+            'credits': credits,
+            'instructor': instructor,
+            'min_credits': min_credits,
+            'max_credits': max_credits,
+            'level': level,
+            'has_capacity': has_capacity,
+            'sort_by': sort_by,
+            'sort_order': sort_order,
+            'limit': limit,
+            'offset': offset
+        }
     )
+    # note: controller expects kwargs; if it returns an object, we attempt to encode
+    enc = jsonable_encoder(result)
+    await _set_cached(cache_key, enc, ttl=120)
+    return enc
 
 @app.get('/api/courses/departments')
 async def get_departments(semester: Optional[str] = None, db: Session = Depends(get_db)):

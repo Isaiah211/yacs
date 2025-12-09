@@ -5,3 +5,5 @@ itsdangerous
 ortools
 nltk
 pytest
+redis>=4.6.0
+python-json-logger
