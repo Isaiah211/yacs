@@ -13,6 +13,8 @@ from pythonjsonlogger import jsonlogger
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
+from redis import Redis
+from rq import Queue
 
 # Import Pydantic models and controllers
 from fastapi import Depends
@@ -115,12 +117,81 @@ async def _set_cached(key: str, value, ttl: int = 300):
     except Exception:
         return
 
+
+async def _invalidate_course_caches():
+    """Remove cached keys related to course lists and searches."""
+    r = getattr(app.state, "redis", None)
+    if not r:
+        return
+    try:
+        # delete keys matching our cache prefixes
+        async for key in r.scan_iter(match="get_courses*"):
+            try:
+                await r.delete(key)
+            except Exception:
+                pass
+        async for key in r.scan_iter(match="search_courses*"):
+            try:
+                await r.delete(key)
+            except Exception:
+                pass
+        logger.info("cache_invalidated", extra={"scope": "courses"})
+    except Exception as e:
+        logger.warning(f"Error invalidating cache: {e}")
+
 # --- API Endpoints ---
 
 @app.get('/')
 async def root():
     """Confirms the API is running."""
     return {"message": "YACS API is Up!"}
+
+
+@app.get('/health')
+async def health():
+    """Basic health endpoint reporting redis availability."""
+    r = getattr(app.state, "redis", None)
+    redis_ok = False
+    if r:
+        try:
+            await r.ping()
+            redis_ok = True
+        except Exception:
+            redis_ok = False
+    return {"status": "ok", "redis": redis_ok}
+
+
+# --- Background job endpoints (RQ) ---
+@app.post('/api/optimizer/async')
+async def enqueue_optimize(request: Request, payload: dict):
+    """Enqueue an optimizer job and return job id. Payload should mirror OptimizeRequest."""
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # use sync Redis for RQ
+    redis_conn = Redis.from_url(redis_url)
+    q = Queue("default", connection=redis_conn)
+    # import background runner path (must be importable by worker)
+    job = q.enqueue("background_tasks.run_optimize_task", payload)
+    return {"job_id": job.get_id(), "status": job.get_status()}
+
+
+@app.get('/api/optimizer/jobs/{job_id}')
+async def get_job_status(job_id: str):
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_conn = Redis.from_url(redis_url)
+    from rq.job import Job
+
+    try:
+        job = Job.fetch(job_id, connection=redis_conn)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    data = {
+        "id": job.get_id(),
+        "status": job.get_status(),
+        "result": job.result,
+        "exc_info": job.exc_info,
+    }
+    return data
 
 ## User Account Management ##
 @app.post('/api/user')
@@ -149,7 +220,10 @@ async def create_course(
     course: CourseCreate,
     db: Session = Depends(get_db)
 ):
-    return course_controller.create_course(course.dict(), db)
+    # run controller in threadpool and invalidate caches after create
+    result = await run_in_threadpool(course_controller.create_course, course.dict(), db)
+    await _invalidate_course_caches()
+    return result
 
 @app.get('/api/courses')
 async def get_courses(request: Request, semester: Optional[str] = None, department: Optional[str] = None, db: Session = Depends(get_db)):
@@ -180,7 +254,9 @@ async def update_course(
     updates: CourseUpdate,
     db: Session = Depends(get_db)
 ):
-    return course_controller.update_course(course_code, semester, updates.dict(exclude_unset=True), db)
+    result = await run_in_threadpool(course_controller.update_course, course_code, semester, updates.dict(exclude_unset=True), db)
+    await _invalidate_course_caches()
+    return result
 
 @app.delete('/api/courses/{course_code}')
 async def delete_course(
@@ -188,8 +264,9 @@ async def delete_course(
     semester: str,
     db: Session = Depends(get_db)
 ):
-    return course_controller.delete_course(course_code, semester, db)
-    return course_controller.get_courses()
+    result = await run_in_threadpool(course_controller.delete_course, course_code, semester, db)
+    await _invalidate_course_caches()
+    return result
 
 @app.get('/api/course/{course_id}')
 async def get_course_by_id(request: Request, course_id: int):
@@ -197,15 +274,21 @@ async def get_course_by_id(request: Request, course_id: int):
 
 @app.put('/api/course/{course_id}')
 async def update_course(request: Request, course_id: int, credentials: UserCoursePydantic):
-    return course_controller.update_course(credentials.dict(), request.session)
+    result = await run_in_threadpool(course_controller.update_course, credentials.dict(), request.session)
+    await _invalidate_course_caches()
+    return result
 
 @app.delete('/api/course')
 async def delete_course_alt(request: Request, credentials: CourseDelete):
-    return course_controller.delete_course(credentials.dict(), request.session)
+    result = await run_in_threadpool(course_controller.delete_course, credentials.dict(), request.session)
+    await _invalidate_course_caches()
+    return result
 
 @app.delete('/api/course/{course_id}')
 async def delete_course_by_id(request: Request, course_id: int):
-    return course_controller.delete_course_by_id(course_id, request.session)
+    result = await run_in_threadpool(course_controller.delete_course_by_id, course_id, request.session)
+    await _invalidate_course_caches()
+    return result
 
 @app.get('/api/courses/{course_code}/prerequisites')
 async def get_prerequisites(
@@ -227,7 +310,9 @@ async def add_prerequisite_endpoint(
 ):
     """add a prerequisite to a course"""
     try:
-        return course_controller.add_prerequisite(course_code, prerequisite_code, db)
+        result = await run_in_threadpool(course_controller.add_prerequisite, course_code, prerequisite_code, db)
+        await _invalidate_course_caches()
+        return result
     except ValueError as e:
         return {"error": str(e)}, 400
 
@@ -254,7 +339,9 @@ async def add_corequisite_endpoint(
     db: Session = Depends(get_db)
 ):
     try:
-        return course_controller.add_corequisite(course_code, corequisite_code, db)
+        result = await run_in_threadpool(course_controller.add_corequisite, course_code, corequisite_code, db)
+        await _invalidate_course_caches()
+        return result
     except ValueError as e:
         return {"error": str(e)}
 
