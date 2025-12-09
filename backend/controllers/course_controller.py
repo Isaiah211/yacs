@@ -1,4 +1,5 @@
 from typing import List, Dict, Optional
+from collections import defaultdict
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from ..tables.course import Course
@@ -1009,6 +1010,138 @@ def find_non_conflicting_courses(enrolled_course_ids: List[int], semester: str, 
                 "total_available": len(available_courses),
                 "non_conflicting": len(non_conflicting),
                 "conflicting": len(conflicting)
+            }
+        }
+    
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    
+def suggest_conflict_resolutions(course_ids: List[int], db: Session, max_suggestions: int = 5) -> Dict:
+    #propose concrete steps students can take to resolve scheduling conflicts
+    try:
+        max_suggestions = max(1, max_suggestions or 5)
+
+        courses = db.query(Course).filter(Course.id.in_(course_ids)).all()
+        if not courses:
+            return {"success": False, "error": "No courses found for the provided IDs."}
+
+        found_ids = {course.id for course in courses}
+        missing = [cid for cid in course_ids if cid not in found_ids]
+        if missing:
+            return {
+                "success": False,
+                "error": f"Courses not found: {', '.join(str(m) for m in missing)}"
+            }
+
+        conflicts = []
+        conflict_map = defaultdict(list)
+
+        for i in range(len(courses)):
+            for j in range(i + 1, len(courses)):
+                result = check_course_conflict(courses[i], courses[j])
+                if result["has_conflict"]:
+                    conflict_entry = {
+                        "course_1": courses[i].to_dict(),
+                        "course_2": courses[j].to_dict(),
+                        "reason": result["reason"],
+                        "details": result.get("details")
+                    }
+                    conflicts.append(conflict_entry)
+                    conflict_map[courses[i].id].append(conflict_entry)
+                    conflict_map[courses[j].id].append(conflict_entry)
+
+        if not conflicts:
+            return {
+                "success": True,
+                "has_conflicts": False,
+                "conflict_count": 0,
+                "conflicts": [],
+                "suggestions": [],
+                "message": "No conflicts detected."
+            }
+
+        suggestions: List[Dict] = []
+
+        def add_suggestion(item: Dict):
+            if len(suggestions) < max_suggestions:
+                suggestions.append(item)
+
+        ranked_courses = sorted(courses, key=lambda course: len(conflict_map.get(course.id, [])), reverse=True)
+
+        for course in ranked_courses:
+            conflict_count = len(conflict_map.get(course.id, []))
+            if conflict_count == 0:
+                continue
+
+            impacted = sorted({
+                entry["course_2"]["course_code"] if entry["course_1"]["id"] == course.id else entry["course_1"]["course_code"]
+                for entry in conflict_map[course.id]
+                if entry.get("course_1") and entry.get("course_2")
+            })
+
+            add_suggestion({
+                "type": "drop_course",
+                "course": course.to_dict(),
+                "conflicts_resolved": conflict_count,
+                "conflicts_with": impacted,
+                "message": f"Dropping {course.course_code} resolves {conflict_count} conflict(s)."
+            })
+
+            if len(suggestions) >= max_suggestions:
+                break
+
+        if len(suggestions) < max_suggestions:
+            selected_ids = {c.id for c in courses}
+            for course in ranked_courses:
+                if len(conflict_map.get(course.id, [])) == 0:
+                    continue
+
+                alternatives_query = db.query(Course).filter(Course.course_code == course.course_code, Course.semester == course.semester, Course.id != course.id)
+
+                if selected_ids:
+                    alternatives_query = alternatives_query.filter(~Course.id.in_(selected_ids))
+
+                alternatives = alternatives_query.order_by(Course.start_time).all()
+                other_courses = [c for c in courses if c.id != course.id]
+
+                for replacement in alternatives:
+                    conflict_found = False
+                    for other in other_courses:
+                        result = check_course_conflict(replacement, other)
+                        if result["has_conflict"]:
+                            conflict_found = True
+                            break
+
+                    if conflict_found:
+                        continue
+
+                    impacted = sorted({
+                        entry["course_2"]["course_code"] if entry["course_1"]["id"] == course.id else entry["course_1"]["course_code"]
+                        for entry in conflict_map[course.id]
+                    })
+
+                    add_suggestion({
+                        "type": "swap_section",
+                        "course": course.to_dict(),
+                        "replacement": replacement.to_dict(),
+                        "conflicts_resolved": len(conflict_map.get(course.id, [])),
+                        "conflicts_with": impacted,
+                        "message": f"Swap to alternate section {replacement.course_code} (ID {replacement.id}) to clear conflicts."
+                    })
+                    break
+
+                if len(suggestions) >= max_suggestions:
+                    break
+
+        return {
+            "success": True,
+            "has_conflicts": True,
+            "conflict_count": len(conflicts),
+            "conflicts": conflicts,
+            "suggestions": suggestions,
+            "metadata": {
+                "courses_analyzed": len(courses),
+                "max_suggestions": max_suggestions
             }
         }
     

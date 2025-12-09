@@ -111,4 +111,9 @@ class CalendarExportRequest(BaseModel):
         return values
 
 
+class ConflictResolutionRequest(BaseModel):
+    course_ids: List[int]
+    max_suggestions: Optional[int] = Field(default=5, ge=1, le=20)
+
+
     

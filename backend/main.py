@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from api_models import (
     UserPydantic, SessionPydantic, CourseCreate,
     CourseUpdate, CourseDelete, UserCoursePydantic,
-    CourseReviewCreate, CourseReviewUpdate, CalendarExportRequest
+    CourseReviewCreate, CourseReviewUpdate, CalendarExportRequest,
+    ConflictResolutionRequest
 )
 from controllers import (
     user_controller, session_controller, course_controller,
@@ -255,6 +256,14 @@ async def find_non_conflicting(enrolled_course_ids: List[int], semester: str, de
         conflicting_courses: courses with conflicts
     """
     return course_controller.find_non_conflicting_courses(enrolled_course_ids, semester, db, department, level)
+
+@app.post('/api/courses/resolve-conflicts')
+async def resolve_conflicts(payload: ConflictResolutionRequest, db: Session = Depends(get_db)):
+    return course_controller.suggest_conflict_resolutions(
+        payload.course_ids,
+        db,
+        payload.max_suggestions or 5
+    )
 
 #calendar exporting endpoint
 @app.post('/api/calendar/export')
