@@ -9,11 +9,12 @@ from . import preferences_controller
 from . import reservations_controller
 from . import review_controller
 from . import calendar_controller
+from . import collaborative_schedule_controller
 
 __all__ = [
 	'user_controller', 'session_controller', 'course_controller',
 	'semester_controller', 'pathway_controller', 'optimizer_controller',
 	'four_year_controller', 'preferences_controller', 'reservations_controller',
-	'review_controller', 'calendar_controller'
+	'review_controller', 'calendar_controller', 'collaborative_schedule_controller'
 ]
 
