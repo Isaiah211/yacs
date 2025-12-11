@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, model_validator
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import time
 
 
@@ -114,6 +114,49 @@ class CalendarExportRequest(BaseModel):
 class ConflictResolutionRequest(BaseModel):
     course_ids: List[int]
     max_suggestions: Optional[int] = Field(default=5, ge=1, le=20)
+
+
+class ScheduleCoursePayload(BaseModel):
+    course_id: int
+    color_hex: Optional[str] = Field(default=None, max_length=16)
+    note: Optional[str] = Field(default=None, max_length=500)
+    order_index: Optional[int] = None
+
+
+class CollaborativeScheduleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    owner_identifier: str = Field(..., min_length=1, max_length=255)
+    owner_display_name: Optional[str] = Field(default=None, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    semester: Optional[str] = Field(default=None, max_length=50)
+    courses: Optional[List[ScheduleCoursePayload]] = None
+
+
+class CollaborativeScheduleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    semester: Optional[str] = Field(default=None, max_length=50)
+    visibility: Optional[str] = Field(default=None, max_length=20)
+    is_locked: Optional[bool] = None
+
+
+class ScheduleCoursesUpsertRequest(BaseModel):
+    requester_identifier: str = Field(..., min_length=1, max_length=255)
+    courses: List[ScheduleCoursePayload] = Field(default_factory=list)
+
+
+class ScheduleShareRequest(BaseModel):
+    requester_identifier: str = Field(..., min_length=1, max_length=255)
+    collaborator_identifier: str = Field(..., min_length=1, max_length=255)
+    collaborator_name: Optional[str] = Field(default=None, max_length=255)
+    access_level: Literal['viewer', 'commenter', 'editor'] = 'viewer'
+    is_admin_delegate: Optional[bool] = False
+
+
+class ScheduleCommentCreate(BaseModel):
+    author_identifier: str = Field(..., min_length=1, max_length=255)
+    author_display_name: Optional[str] = Field(default=None, max_length=255)
+    content: str = Field(..., min_length=1, max_length=2000)
 
 
     

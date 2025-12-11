@@ -15,3 +15,4 @@ from .course_corequisite import CourseCorequisite
 from .semester_info import SemesterInfo
 from .professor import Professor
 from .course_review import CourseReview
+from .collaborative_schedule import CollaborativeSchedule, ScheduleCourse, ScheduleShare, ScheduleComment

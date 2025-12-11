@@ -23,12 +23,14 @@ from api_models import (
     UserPydantic, SessionPydantic, CourseCreate,
     CourseUpdate, CourseDelete, UserCoursePydantic,
     CourseReviewCreate, CourseReviewUpdate, CalendarExportRequest,
-    ConflictResolutionRequest
+    ConflictResolutionRequest, CollaborativeScheduleCreate,
+    CollaborativeScheduleUpdate, ScheduleCoursesUpsertRequest,
+    ScheduleShareRequest, ScheduleCommentCreate
 )
 from controllers import (
     user_controller, session_controller, course_controller,
     semester_controller, pathway_controller, optimizer_controller,
-    review_controller, calendar_controller
+    review_controller, calendar_controller, collaborative_schedule_controller
 )
 from controllers import four_year_controller, preferences_controller, reservations_controller
 from tables.database import get_db
@@ -502,6 +504,62 @@ async def get_course_review_summary(course_code: str, semester: Optional[str] = 
 async def get_top_rated_courses(semester: Optional[str] = None, department: Optional[str] = None, min_reviews: int = 3, limit: int = 10, db: Session = Depends(get_db)):
     return review_controller.get_top_rated_courses(db, semester=semester, department=department, min_reviews=min_reviews, limit=limit)
 
+#collaborative schedule endpoints
+@app.post('/api/schedules')
+async def create_collaborative_schedule(payload: CollaborativeScheduleCreate, db: Session = Depends(get_db)):
+    return collaborative_schedule_controller.create_schedule(payload.model_dump(exclude_unset=True), db)
+
+
+@app.get('/api/schedules')
+async def list_collaborative_schedules(requester_id: str, include_shared: bool = True, db: Session = Depends(get_db)):
+    return collaborative_schedule_controller.list_user_schedules(requester_id, include_shared, db)
+
+
+@app.get('/api/schedules/{schedule_id}')
+async def get_collaborative_schedule(schedule_id: int, requester_id: str, db: Session = Depends(get_db)):
+    return collaborative_schedule_controller.get_schedule(schedule_id, requester_id, db)
+
+
+@app.put('/api/schedules/{schedule_id}')
+async def update_collaborative_schedule(schedule_id: int, requester_id: str, payload: CollaborativeScheduleUpdate, db: Session = Depends(get_db)):
+    return collaborative_schedule_controller.update_schedule(
+        schedule_id,
+        requester_id,
+        payload.model_dump(exclude_unset=True),
+        db
+    )
+
+
+@app.put('/api/schedules/{schedule_id}/courses')
+async def replace_collaborative_schedule_courses(schedule_id: int, payload: ScheduleCoursesUpsertRequest, db: Session = Depends(get_db)):
+    course_payloads = [course.model_dump(exclude_unset=True) for course in payload.courses]
+    return collaborative_schedule_controller.replace_schedule_courses(
+        schedule_id,
+        payload.requester_identifier,
+        course_payloads,
+        db
+    )
+
+
+@app.post('/api/schedules/{schedule_id}/share')
+async def share_collaborative_schedule(schedule_id: int, payload: ScheduleShareRequest, db: Session = Depends(get_db)):
+    share_payload = payload.model_dump(exclude={'requester_identifier'})
+    return collaborative_schedule_controller.share_schedule(
+        schedule_id,
+        payload.requester_identifier,
+        share_payload,
+        db
+    )
+
+
+@app.post('/api/schedules/{schedule_id}/comments')
+async def add_schedule_comment(schedule_id: int, payload: ScheduleCommentCreate, db: Session = Depends(get_db)):
+    return collaborative_schedule_controller.add_comment(
+        schedule_id,
+        payload.author_identifier,
+        payload.model_dump(exclude_unset=True),
+        db
+    )
 
 # --- Add your Course, Professor, and other endpoints below ---
 # Example:
