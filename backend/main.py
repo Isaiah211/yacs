@@ -14,7 +14,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from redis import Redis
-from rq import Queue
+from rq import Queue, Retry
+from tables.optimizer_job import OptimizerJob
+from sqlalchemy.orm import Session as _Session
 import inspect
 from fastapi.routing import APIRoute
 
@@ -185,34 +187,61 @@ async def health():
 
 # --- Background job endpoints (RQ) ---
 @app.post('/api/optimizer/async')
-async def enqueue_optimize(request: Request, payload: dict):
-    """Enqueue an optimizer job and return job id. Payload should mirror OptimizeRequest."""
+async def enqueue_optimize(payload: dict, db: _Session = Depends(get_db)):
+    """Enqueue an optimizer job, persist DB record, and return job identifiers."""
+    # create DB job record first
+    job_row = OptimizerJob(status='queued', params=payload)
+    db.add(job_row)
+    db.commit()
+    db.refresh(job_row)
+
+    # enqueue RQ job with reference to DB id
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    # use sync Redis for RQ
     redis_conn = Redis.from_url(redis_url)
     q = Queue("default", connection=redis_conn)
-    # import background runner path (must be importable by worker)
-    job = q.enqueue("background_tasks.run_optimize_task", payload)
-    return {"job_id": job.get_id(), "status": job.get_status()}
 
+    payload2 = dict(payload)
+    payload2['job_db_id'] = job_row.id
+    timeout = int(os.getenv('OPTIMIZER_JOB_TIMEOUT', '600'))
+    max_retries = int(os.getenv('OPTIMIZER_JOB_RETRIES', '2'))
+    retry = Retry(max=max_retries)
+    job = q.enqueue("background_tasks.run_optimize_task", payload2, timeout=timeout, retry=retry)
 
-@app.get('/api/optimizer/jobs/{job_id}')
-async def get_job_status(job_id: str):
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    redis_conn = Redis.from_url(redis_url)
-    from rq.job import Job
-
+    # persist rq job id
     try:
-        job = Job.fetch(job_id, connection=redis_conn)
+        job_row.rq_job_id = job.get_id()
+        db.add(job_row)
+        db.commit()
     except Exception:
+        db.rollback()
+
+    return {"job_db_id": job_row.id, "rq_job_id": job.get_id(), "status": job_row.status}
+
+
+@app.get('/api/optimizer/jobs/{job_db_id}')
+async def get_job_status(job_db_id: int, db: _Session = Depends(get_db)):
+    # prefer DB-backed job record
+    job_row = db.query(OptimizerJob).filter(OptimizerJob.id == job_db_id).first()
+    if not job_row:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    data = {
-        "id": job.get_id(),
-        "status": job.get_status(),
-        "result": job.result,
-        "exc_info": job.exc_info,
-    }
+    # optional Redis progress
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    try:
+        redis_conn = Redis.from_url(redis_url)
+        progress_raw = redis_conn.get(f"optimizer:progress:{job_db_id}")
+        progress = None
+        if progress_raw:
+            try:
+                progress = json.loads(progress_raw)
+            except Exception:
+                progress = None
+    except Exception:
+        progress = None
+
+    data = job_row.to_dict()
+    if progress is not None:
+        data['progress_key'] = progress
     return data
 
 ## User Account Management ##
