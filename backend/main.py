@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from redis import Redis
 from rq import Queue
+import inspect
+from fastapi.routing import APIRoute
 
 # Import Pydantic models and controllers
 from fastapi import Depends
@@ -42,7 +44,25 @@ app = FastAPI()
 # --- Add Middleware ---
 app.add_middleware(SessionMiddleware, secret_key="a_very_secret_key")
 
-# --- Include Routers ---
+# --- Use a custom APIRoute to run sync endpoints in a threadpool ---
+class SyncToThreadRoute(APIRoute):
+    def get_route_handler(self):
+        original_route_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request):
+            # If the endpoint is a coroutine function, run normally
+            if inspect.iscoroutinefunction(self.endpoint):
+                return await original_route_handler(request)
+            # Otherwise run the sync handler in a threadpool
+            return await run_in_threadpool(original_route_handler, request)
+
+        return custom_route_handler
+
+
+# Set the app to use our route class for future routes
+app.router.route_class = SyncToThreadRoute
+
+# --- Include Routers (now using SyncToThreadRoute) ---
 app.include_router(semester_controller.router, tags=["semesters"])
 app.include_router(pathway_controller.router, tags=["pathways"])
 app.include_router(optimizer_controller.router, tags=["optimizer"])
