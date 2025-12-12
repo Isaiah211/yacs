@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from sqlalchemy import func, case, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..tables.course import Course
 from ..tables.course_review import CourseReview
@@ -56,7 +56,7 @@ def create_review(review_data: Dict, db: Session) -> Dict:
 
 def list_reviews(db: Session, course_id: Optional[int] = None, course_code: Optional[str] = None, semester: Optional[str] = None, limit: int = 50, offset: int = 0, include_hidden: bool = False) -> Dict:
     try:
-        query = db.query(CourseReview).join(Course)
+        query = db.query(CourseReview).options(selectinload(CourseReview.course)).join(Course)
 
         if course_id is not None:
             query = query.filter(CourseReview.course_id == course_id)
@@ -79,7 +79,8 @@ def list_reviews(db: Session, course_id: Optional[int] = None, course_code: Opti
             "metadata": {
                 "total": total,
                 "limit": limit,
-                "offset": offset
+                "offset": offset,
+                "count": len(reviews)
             }
         }
     except Exception as e:
@@ -87,7 +88,7 @@ def list_reviews(db: Session, course_id: Optional[int] = None, course_code: Opti
 
 def get_review(review_id: int, db: Session) -> Dict:
     try:
-        review = db.query(CourseReview).filter(CourseReview.id == review_id).first()
+        review = db.query(CourseReview).options(selectinload(CourseReview.course)).filter(CourseReview.id == review_id).first()
         if not review:
             return {"success": False, "error": "Review not found"}
         return {"success": True, "review": review.to_dict()}

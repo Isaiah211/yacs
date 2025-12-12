@@ -33,6 +33,21 @@ def get_preferences(user_id: int, db: Session = Depends(get_db)):
     if not prefs:
         raise HTTPException(status_code=404, detail="Preferences not found")
     return prefs.to_dict()
+@router.get("/", response_model=List[StudentPreferencesResponse])
+def get_preferences(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    query = db.query(StudentPreferences)
+    total = query.count()
+    prefs = query.offset(skip).limit(limit).all()
+    from fastapi import Response
+    response = Response()
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Limit"] = str(limit)
+    response.headers["X-Skip"] = str(skip)
+    return prefs
 
 
 @router.post("/{user_id}")

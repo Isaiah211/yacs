@@ -46,10 +46,16 @@ def get_professor_by_email(email: str, db: Session) -> Optional[Dict]:
         "profile_page": p.profile_page,
     }
 
-def list_professors(db: Session) -> List[Dict]:
-    rows = db.query(Professor).all()
-    return [
-        {
+def list_professors(db: Session, limit: int = 100, offset: int = 0, columns: Optional[List[str]] = None) -> List[Dict]:
+    query = db.query(Professor)
+    total = query.count()
+    if columns:
+        query = query.with_entities(*[getattr(Professor, col) for col in columns])
+    rows = query.limit(limit).offset(offset).all()
+    def row_to_dict(r):
+        if columns:
+            return {col: getattr(r, col, None) for col in columns}
+        return {
             "email": r.email,
             "name": r.name,
             "title": r.title,
@@ -58,8 +64,9 @@ def list_professors(db: Session) -> List[Dict]:
             "portfolio_page": r.portfolio_page,
             "profile_page": r.profile_page,
         }
-        for r in rows
-    ]
+    result = [row_to_dict(r) for r in rows]
+    # Optionally, return metadata as well
+    return {"professors": result, "metadata": {"total": total, "limit": limit, "offset": offset, "count": len(result)}}
 
 def update_professor(email: str, updates: Dict, db: Session) -> Dict:
     p = db.query(Professor).filter(Professor.email == email).first()

@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
+import logging
 
 from ..tables.database import get_db
 from ..services.pathway_optimizer import optimize_pathway, gather_pathway_courses, build_prereq_map
@@ -39,40 +40,71 @@ class ScoreRequest(BaseModel):
 
 @router.post("/", response_model=List[SemesterPlan])
 def optimize(request: OptimizeRequest, db: Session = Depends(get_db)):
+    logger = logging.getLogger("optimizer_controller")
+    # Input validation
     if not request.pathway_id and not request.pathway_code:
+        logger.warning("Missing pathway_id or pathway_code in request: %s", request.dict())
         raise HTTPException(status_code=400, detail="pathway_id or pathway_code required")
-    if request.solver and request.solver.lower() == 'exact':
-        courses = gather_pathway_courses(db, pathway_id=request.pathway_id, pathway_code=request.pathway_code)
-        prereq_map = build_prereq_map(db)
-        completed = set((request.completed_course_codes or []))
-        plan = optimize_pathway_exact(
-            db=db,
-            pathway_courses=courses,
-            prereq_map=prereq_map,
-            completed=completed,
-            start_semester=request.start_semester,
-            max_terms=request.max_terms or 12,
-            max_credits_per_semester=request.max_credits_per_semester or 15,
-            allow_overfull=request.allow_overfull or False,
-        )
-    else:
-        plan = optimize_pathway(
-            db=db,
-            pathway_id=request.pathway_id,
-            pathway_code=request.pathway_code,
-            completed_course_codes=request.completed_course_codes,
-            max_credits_per_semester=request.max_credits_per_semester or 15,
-            user_id=request.user_id,
-            start_semester=request.start_semester,
-            max_terms=request.max_terms or 12,
-            allow_overfull=request.allow_overfull or False,
-            reserve_seats=request.reserve_seats or False,
-        )
+    if request.max_credits_per_semester is not None and (request.max_credits_per_semester < 1 or request.max_credits_per_semester > 30):
+        logger.warning("Invalid max_credits_per_semester: %s", request.max_credits_per_semester)
+        raise HTTPException(status_code=400, detail="max_credits_per_semester must be between 1 and 30")
+    if request.max_terms is not None and (request.max_terms < 1 or request.max_terms > 20):
+        logger.warning("Invalid max_terms: %s", request.max_terms)
+        raise HTTPException(status_code=400, detail="max_terms must be between 1 and 20")
 
-    if plan is None:
-        raise HTTPException(status_code=500, detail="Failed to generate plan")
+    try:
+        logger.info("Running optimizer for pathway_id=%s, pathway_code=%s", request.pathway_id, request.pathway_code)
+        if request.solver and request.solver.lower() == 'exact':
+            courses = gather_pathway_courses(db, pathway_id=request.pathway_id, pathway_code=request.pathway_code)
+            prereq_map = build_prereq_map(db)
+            completed = set((request.completed_course_codes or []))
+            plan = optimize_pathway_exact(
+                db=db,
+                pathway_courses=courses,
+                prereq_map=prereq_map,
+                completed=completed,
+                start_semester=request.start_semester,
+                max_terms=request.max_terms or 12,
+                max_credits_per_semester=request.max_credits_per_semester or 15,
+                allow_overfull=request.allow_overfull or False,
+            )
+        else:
+            plan = optimize_pathway(
+                db=db,
+                pathway_id=request.pathway_id,
+                pathway_code=request.pathway_code,
+                completed_course_codes=request.completed_course_codes,
+                max_credits_per_semester=request.max_credits_per_semester or 15,
+                user_id=request.user_id,
+                start_semester=request.start_semester,
+                max_terms=request.max_terms or 12,
+                allow_overfull=request.allow_overfull or False,
+                reserve_seats=request.reserve_seats or False,
+            )
+        if plan is None:
+            logger.error("Failed to generate plan for request: %s", request.dict())
+            raise HTTPException(status_code=500, detail="Failed to generate plan")
 
-    return plan
+        # Collect unscheduled courses if possible
+        unscheduled = []
+        if hasattr(plan, 'unscheduled_courses'):
+            unscheduled = plan.unscheduled_courses
+
+        total_credits = sum(term.get('total_credits', 0) for term in plan)
+        response = {
+            "plan": plan,
+            "metadata": {
+                "terms": len(plan),
+                "total_credits": total_credits,
+                "max_credits_per_semester": request.max_credits_per_semester or 15,
+                "unscheduled_courses": unscheduled
+            }
+        }
+        logger.info("Optimizer completed successfully for pathway_id=%s, pathway_code=%s", request.pathway_id, request.pathway_code)
+        return response
+    except Exception as e:
+        logger.exception("Exception during optimizer run: %s", str(e))
+        raise HTTPException(status_code=500, detail="Internal error during optimization")
 
 
 @router.post('/score')

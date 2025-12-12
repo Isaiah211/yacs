@@ -1,3 +1,17 @@
+from sqlalchemy.orm import selectinload
+
+# List reservations with eager loading and pagination
+@router.get("/", response_model=Optional[list])
+def list_reservations(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    query = db.query(Reservation).options(selectinload(Reservation.offering))
+    total = query.count()
+    reservations = query.offset(skip).limit(limit).all()
+    from fastapi import Response
+    response = Response()
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Limit"] = str(limit)
+    response.headers["X-Skip"] = str(skip)
+    return [r.to_dict() for r in reservations]
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 from typing import Optional

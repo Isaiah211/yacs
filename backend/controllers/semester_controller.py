@@ -42,8 +42,16 @@ def create_semester(semester: SemesterCreate, db: Session = get_db()):
     return db_semester
 
 @router.get("/semesters/", response_model=List[SemesterResponse])
-def get_semesters(db: Session = get_db()):
-    return db.query(Semester).all()
+def get_semesters(skip: int = 0, limit: int = 100, db: Session = get_db()):
+    query = db.query(Semester)
+    total = query.count()
+    semesters = query.offset(skip).limit(limit).all()
+    from fastapi import Response
+    response = Response()
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Limit"] = str(limit)
+    response.headers["X-Skip"] = str(skip)
+    return semesters
 
 @router.get("/semesters/current", response_model=SemesterResponse)
 def get_current_semester(db: Session = get_db()):
@@ -86,12 +94,15 @@ def get_semester(db: Session, semester: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def list_semesters(db: Session) -> dict:
+def list_semesters(db: Session, skip: int = 0, limit: int = 100) -> dict:
     try:
-        rows = db.query(SemesterInfo).all()
+        query = db.query(SemesterInfo)
+        total = query.count()
+        rows = query.offset(skip).limit(limit).all()
         return {
             "success": True,
-            "semesters": [{"semester": r.semester, "public": r.public} for r in rows]
+            "semesters": [{"semester": r.semester, "public": r.public} for r in rows],
+            "metadata": {"total": total, "limit": limit, "skip": skip, "count": len(rows)}
         }
     except Exception as e:
         return {"success": False, "error": str(e)}

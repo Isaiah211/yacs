@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from ..tables.pathway import Pathway, PathwayRequirement
 from ..tables.course import Course
 from ..tables.database import get_db
@@ -91,11 +91,20 @@ def get_pathways(
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
-    return db.query(Pathway).offset(skip).limit(limit).all()
+    query = db.query(Pathway).options(selectinload(Pathway.requirements).selectinload(PathwayRequirement.courses))
+    total = query.count()
+    pathways = query.offset(skip).limit(limit).all()
+    # Attach pagination metadata in response headers (FastAPI way)
+    from fastapi import Response
+    response = Response()
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Limit"] = str(limit)
+    response.headers["X-Skip"] = str(skip)
+    return pathways
 
 @router.get("/{pathway_id}", response_model=PathwayResponse)
 def get_pathway(pathway_id: int, db: Session = Depends(get_db)):
-    pathway = db.query(Pathway).filter(Pathway.id == pathway_id).first()
+    pathway = db.query(Pathway).options(selectinload(Pathway.requirements).selectinload(PathwayRequirement.courses)).filter(Pathway.id == pathway_id).first()
     if not pathway:
         raise HTTPException(
             status_code=404,

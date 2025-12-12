@@ -1,7 +1,7 @@
 from typing import List, Dict, Optional
 from collections import defaultdict
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from ..tables.course import Course
 from ..tables.course_corequisite import CourseCorequisite
 from sqlalchemy.exc import IntegrityError
@@ -45,7 +45,7 @@ def create_course(course_data: Dict, db: Session) -> Dict:
         db.rollback()
         return {"success": False, "error": str(e)}
 
-def get_courses(semester: Optional[str] = None, department: Optional[str] = None, db: Session = None) -> Dict:
+def get_courses(semester: Optional[str] = None, department: Optional[str] = None, db: Session = None, limit: int = 100, offset: int = 0) -> Dict:
     """
     Get all courses with optional filters.
     
@@ -59,16 +59,18 @@ def get_courses(semester: Optional[str] = None, department: Optional[str] = None
     """
     try:
         query = db.query(Course)
-        
         if semester:
             query = query.filter(Course.semester == semester)
         if department:
             query = query.filter(Course.department == department)
-            
-        courses = query.all()
+        # Eager load corequisites and prerequisites if accessed in to_dict
+        query = query.options(selectinload(Course.corequisites), selectinload(Course.prerequisites))
+        total = query.count()
+        courses = query.limit(limit).offset(offset).all()
         return {
             "success": True,
-            "courses": [course.to_dict() for course in courses]
+            "courses": [course.to_dict() for course in courses],
+            "metadata": {"total": total, "limit": limit, "offset": offset, "count": len(courses)}
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
